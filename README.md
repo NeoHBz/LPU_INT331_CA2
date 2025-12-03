@@ -27,21 +27,23 @@ Automated web platform interaction system using Puppeteer, TypeScript, and Kuber
 .
 ├── helm/
 │   └── platform-automation/
-│       ├── Chart.yaml           # Helm chart metadata
-│       ├── values.yaml          # Default configuration values
-│       └── templates/
-│           └── deployment.yaml  # Kubernetes deployment template
+│       ├── Chart.yaml              # Helm chart metadata
+│       ├── templates/
+│       │   └── deployment.yaml     # Kubernetes deployment template
+│       └── values.yaml             # Default configuration values
+├── package.json                    # Root scripts for automation
+├── README.md                       # this.file
 ├── source/
-│   ├── Dockerfile              # Container image definition
-│   ├── package.json            # Application dependencies
-│   ├── tsconfig.json           # TypeScript configuration
-│   └── src/
-│       ├── index.ts            # Application entry point
-│       └── utils/
-│           └── logger.ts       # Logging utilities
-├── user-configs/
-│   └── user1.yaml              # User-specific configurations
-└── package.json                # Root scripts for automation
+│   ├── bun.lock
+│   ├── Dockerfile                    # Container image definition
+│   ├── package.json                 # Application dependencies
+│   ├── src/
+│   │   ├── index.ts                 # Application entry point
+│   │   └── utils/
+│   │       └── logger.ts            # Logging utilities
+│   └── tsconfig.json                 # TypeScript configuration
+└── user-configs/
+    └── user1.yaml                   # User-specific configurations
 ```
 
 ## Setup
