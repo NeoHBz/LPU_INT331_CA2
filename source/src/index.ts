@@ -508,42 +508,6 @@ app.listen(PORT, async () => {
         });
     });
 
-    // Metrics endpoint for Prometheus scraping
-    app.get("/metrics", async (_req: Request, res: Response) => {
-        const uptime = Date.now() - new Date(automation.startTime).getTime();
-        const status = await automation.apiStatus();
-        
-        // Prometheus format metrics
-        const metrics = `
-# HELP automation_uptime_seconds Total uptime in seconds
-# TYPE automation_uptime_seconds gauge
-automation_uptime_seconds ${Math.floor(uptime / 1000)}
-
-# HELP automation_execution_count Total number of workflow executions
-# TYPE automation_execution_count counter
-automation_execution_count ${automation.executionCount}
-
-# HELP automation_status Current system status (0=failed, 1=degraded, 2=healthy)
-# TYPE automation_status gauge
-automation_status ${automation.systemStatus === "healthy" ? 2 : automation.systemStatus === "degraded" ? 1 : 0}
-
-# HELP automation_stage_success Stage completion status (0=failed, 1=success)
-# TYPE automation_stage_success gauge
-${Object.entries(status.stageStatus)
-    .map(([stage, config]) => `automation_stage_success{stage="${stage}"} ${config.success ? 1 : 0}`)
-    .join("\n")}
-
-# HELP automation_stage_retries Current retry count per stage
-# TYPE automation_stage_retries gauge
-${Object.entries(status.stageStatus)
-    .map(([stage, config]) => `automation_stage_retries{stage="${stage}"} ${config.currentRetries}`)
-    .join("\n")}
-`.trim();
-        
-        res.setHeader("Content-Type", "text/plain");
-        res.send(metrics);
-    });
-
     process.on("SIGINT", async () => {
         Logger.info("Received SIGINT signal, shutting down gracefully...");
         await automation.shutdown();
