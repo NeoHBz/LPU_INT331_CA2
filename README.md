@@ -1,101 +1,102 @@
 # Online Platform Automation
 
-Automated web platform interaction system using Puppeteer, TypeScript, and Kubernetes deployment via Helm.
+Kubernetes-based automation framework using TypeScript, Express, and Docker. Deploy scalable automation instances with individual configurations.
 
-## Table of Contents
+> **Note:** This is a framework/template. Implement your automation logic in the `Automation.run()` method in `source/src/index.ts`.
 
-- [Prerequisites](#prerequisites)
-- [Project Structure](#project-structure)
-- [Setup](#setup)
-- [Configuration](#configuration)
-- [Deployment](#deployment)
-- [Managing Multiple Users](#managing-multiple-users)
-- [Common Commands](#common-commands)
-- [Troubleshooting](#troubleshooting)
+## Features
+
+- 🚀 **Kubernetes-Native**: Deploy with Helm charts
+- 🐳 **Containerized**: Multi-stage Docker builds
+- 📊 **Multi-User**: Support multiple isolated instances
+- 🔧 **Configurable**: Environment-based configuration
+- 📝 **TypeScript**: Type-safe development
+- 🏥 **Health Checks**: Built-in endpoints for K8s probes (liveness, readiness)
+- 📦 **Minimal**: Optimized Alpine-based images
+- 🔒 **Concurrency Control**: Mutex-protected execution preventing race conditions
+- 🔄 **Retry Logic**: Configurable retry mechanisms with exponential backoff
+- 📈 **Prometheus Metrics**: Built-in metrics endpoint for monitoring
+- 🎯 **Stage Management**: Execution pipeline with state tracking
+- ⏱️ **Automated Monitoring**: Self-healing with configurable health checks
 
 ## Prerequisites
 
-- **Docker**: For building container images
-- **Kubernetes**: Local cluster (Minikube, Docker Desktop, or similar)
-- **Helm**: v3.x or later for Kubernetes deployments
-- **Node.js**: v18.0.0 or later (for local development)
-- **npm**: Package manager
+- **Docker**: v20.x or later
+- **Kubernetes**: v1.24+ (Minikube, Docker Desktop, k3s, or cloud)
+- **Helm**: v3.x or later
+- **Node.js**: v18.0.0+ (for local development)
+- **kubectl**: Configured for your cluster
+
+## Quick Start
+
+### 1. Clone and Setup
+
+```bash
+git clone <your-repo-url>
+cd online-platform-automation
+```
+
+### 2. Build Docker Image
+
+```bash
+npm run docker:build
+# Or manually:
+docker build -t online-platform-automation:dev source
+```
+
+### 3. Configure User
+
+Create or edit `user-configs/user1.yaml`:
+
+```yaml
+userConfig:
+  username: "your_username"
+  password: "your_password"
+  homeUrl: "https://platform.example.com"
+  emailPrefix: "you@example.com"
+  targetUrl: "https://platform.example.com/target"
+  logLevel: "info"
+  headless: 1
+```
+
+### 4. Deploy to Kubernetes
+
+```bash
+helm install user1 helm/platform-automation -f user-configs/user1.yaml
+```
+
+### 5. Verify Deployment
+
+```bash
+kubectl get pods
+kubectl logs -f -l app=user1
+```
 
 ## Project Structure
 
 ```
 .
-├── helm/
-│   └── platform-automation/
-│       ├── Chart.yaml              # Helm chart metadata
-│       ├── templates/
-│       │   └── deployment.yaml     # Kubernetes deployment template
-│       └── values.yaml             # Default configuration values
-├── package.json                    # Root scripts for automation
-├── README.md                       # this.file
-├── source/
-│   ├── bun.lock
-│   ├── Dockerfile                    # Container image definition
-│   ├── package.json                 # Application dependencies
-│   ├── src/
-│   │   ├── index.ts                 # Application entry point
-│   │   └── utils/
-│   │       └── logger.ts            # Logging utilities
-│   └── tsconfig.json                 # TypeScript configuration
-└── user-configs/
-    └── user1.yaml                   # User-specific configurations
-```
-
-## Setup
-
-### 1. Clone the Repository
-
-```bash
-git clone git@github.com:NeoHBz/online-platform-automation.git
-cd online-platform-automation
-```
-
-### 2. Install Dependencies (for local development)
-
-```bash
-cd source
-npm install
-```
-
-### 3. Build Docker Image
-
-Build the container image for the automation application:
-
-```bash
-npm run docker:build
-```
-
-Or manually:
-
-```bash
-docker build -t online-platform-automation:dev source
-```
-
-### 4. Verify Kubernetes Cluster
-
-Ensure your Kubernetes cluster is running:
-
-```bash
-kubectl cluster-info
-kubectl get nodes
-```
-
-### 5. Verify Helm Installation
-
-```bash
-helm version
+├── helm/platform-automation/    # Kubernetes deployment
+│   ├── Chart.yaml              # Chart metadata
+│   ├── values.yaml             # Default values
+│   └── templates/
+│       └── deployment.yaml     # K8s deployment spec
+├── source/                     # Application code
+│   ├── Dockerfile              # Container build
+│   ├── package.json            # Dependencies
+│   ├── tsconfig.json           # TS config
+│   └── src/
+│       ├── index.ts            # Main entry point
+│       └── utils/
+│           └── logger.ts       # Logging utility
+├── user-configs/               # User configurations
+│   └── user1.yaml              # Example config
+└── package.json                # Deployment scripts
 ```
 
 ## Configuration
 
-### Helm Chart Configuration
-
-The main configuration is in [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml):
+### Helm Values (values.yaml)
 
 ```yaml
 replicaCount: 1
@@ -123,185 +124,171 @@ resources:
     memory: 256Mi
 ```
 
-### User-Specific Configuration
+### Environment Variables
 
-Create user configuration files in the `user-configs/` directory. Each file should override the necessary values:
-
-**Example: user-configs/user1.yaml**
-
-```yaml
-userConfig:
-  username: "john.doe"
-  password: "secure_password"
-  homeUrl: "https://platform.example.com"
-  emailPrefix: "john.doe"
-  targetUrl: "https://platform.example.com/meetings/12345"
-  logLevel: "debug"
-  headless: 1
-```
-
-**Configuration Parameters:**
-
-- `username`: Platform login username
-- `password`: Platform login password
-- `homeUrl`: Base URL of the platform
-- `emailPrefix`: Email prefix for notifications
-- `targetUrl`: Direct URL to the target resource/session
-- `logLevel`: Logging level (`debug`, `info`, `warn`, `error`)
-- `headless`: Run browser in headless mode (1 = headless, 0 = visible)
+- `USERNAME`: Platform username
+- `PASSWORD`: Platform password
+- `HOME_URL`: Platform base URL
+- `EMAIL_PREFIX`: Email configuration
+- `TARGET_URL`: Target resource/session URL
+- `LOG_LEVEL`: Logging level (`debug`, `info`, `warn`, `error`)
+- `HEADLESS`: Browser mode (1 = headless, 0 = visible)
+- `PORT`: Server port (default: 3000)
 
 ## Deployment
 
-### Deploy a Single User Instance
-
-Deploy using a user-specific configuration:
-
-```bash
-helm install <release-name> helm/platform-automation -f user-configs/<user>.yaml
-```
-
-**Example:**
+### Single User
 
 ```bash
 helm install user1 helm/platform-automation -f user-configs/user1.yaml
 ```
 
-Or use the npm script:
+### Multiple Users
 
 ```bash
-npm run helm:user1
+helm install user1 helm/platform-automation -f user-configs/user1.yaml
+helm install user2 helm/platform-automation -f user-configs/user2.yaml
+helm install user3 helm/platform-automation -f user-configs/user3.yaml
 ```
 
-### Verify Deployment
-
-Check deployment status:
+### Update Deployment
 
 ```bash
-helm list
-kubectl get deployments
-kubectl get pods
+helm upgrade user1 helm/platform-automation -f user-configs/user1.yaml
 ```
 
-View logs:
+### Remove Deployment
 
 ```bash
-kubectl logs -l app=<release-name> -f
+helm uninstall user1
 ```
 
-### Update Existing Deployment
+## Development
 
-If you modify the user configuration, upgrade the deployment:
+### Local Development
 
 ```bash
-helm upgrade <release-name> helm/platform-automation -f user-configs/<user>.yaml
+cd source
+npm install
+npm run dev          # Run with ts-node
+npm run build        # Compile TypeScript
+npm start            # Run compiled JS
 ```
 
-### Uninstall Deployment
+### Environment Variables
 
-Remove a deployment:
+Create `source/.env` for local development:
 
 ```bash
-helm uninstall <release-name>
+USERNAME=your_username
+PASSWORD=your_password
+HOME_URL=https://platform.example.com
+EMAIL_PREFIX=you@example.com
+TARGET_URL=https://platform.example.com/target
+LOG_LEVEL=debug
+HEADLESS=1
+PORT=3000
 ```
 
-Or use the npm script:
+**⚠️ Never commit `.env` files!**
 
-```bash
-npm run helm:uninstall
+## Implementing Your Automation
+
+This framework provides production-ready infrastructure. Implement your logic in the stage methods:
+
+### 1. Initialization Stage
+
+```typescript
+async initialize(): Promise<boolean> {
+    try {
+        Logger.info("Initializing automation system...");
+        
+        // TODO: Add your initialization logic
+        // Examples:
+        // - Connect to databases
+        // - Initialize external clients (Puppeteer, APIs)
+        // - Load configuration files
+        // - Set up resources
+        
+        this.currentStage = ExecutionStage.INITIALIZED;
+        return true;
+    } catch (error: any) {
+        Logger.error(`Initialization failed: ${error.message}`);
+        return false;
+    }
+}
 ```
 
-## Managing Multiple Users
+### 2. Workflow Execution (Mutex-Protected)
 
-### Creating New User Configurations
-
-1. **Create a new user config file:**
-
-```bash
-cp user-configs/user1.yaml user-configs/user2.yaml
+```typescript
+async executeWorkflow(): Promise<boolean> {
+    // Mutex automatically prevents concurrent execution
+    try {
+        Logger.info(`Starting workflow execution #${this.executionCount}...`);
+        
+        // TODO: Implement your automation workflow
+        // Examples:
+        // - Web scraping with Puppeteer
+        // - API integrations
+        // - Data processing pipelines
+        // - Scheduled operations
+        
+        this.currentStage = ExecutionStage.WORKFLOW_COMPLETED;
+        return true;
+    } catch (error: any) {
+        Logger.error(`Workflow failed: ${error.message}`);
+        return false;
+    }
+}
 ```
 
-2. **Edit the configuration:**
+### 3. Health Check Stage
 
-```bash
-nano user-configs/user2.yaml
+```typescript
+async performHealthCheck(): Promise<boolean> {
+    try {
+        // TODO: Add health check logic
+        // Examples:
+        // - Verify external service connections
+        // - Check resource availability
+        // - Validate data integrity
+        
+        return true;
+    } catch (error: any) {
+        Logger.error(`Health check failed: ${error.message}`);
+        return false;
+    }
+}
 ```
 
-Update with user-specific credentials and URLs.
+### Architecture Benefits
 
-3. **Add npm script (optional):**
+- **Automated Monitoring**: Runs every 30 seconds checking system health
+- **Mutex Protection**: Prevents race conditions in concurrent operations
+- **Retry Logic**: Configurable retries per stage (3-5 attempts)
+- **State Tracking**: ExecutionStage enum tracks workflow progress
+- **Self-Healing**: Automatic recovery from degraded states
 
-Edit [package.json](package.json) and add:
+### Adding Dependencies
 
+Edit `source/package.json`:
 ```json
 {
-  "scripts": {
-    "helm:user2": "helm install user2 helm/platform-automation -f user-configs/user2.yaml"
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "your-package": "^x.x.x"
   }
 }
 ```
 
-4. **Deploy the new user:**
-
+Then rebuild:
 ```bash
-npm run helm:user2
-```
-
-Or manually:
-
-```bash
-helm install user2 helm/platform-automation -f user-configs/user2.yaml
-```
-
-### List All Running Instances
-
-```bash
-helm list
-kubectl get pods -o wide
-```
-
-### Spin Up Multiple Containers Simultaneously
-
-Deploy multiple users in parallel:
-
-```bash
-helm install user1 helm/platform-automation -f user-configs/user1.yaml &
-helm install user2 helm/platform-automation -f user-configs/user2.yaml &
-helm install user3 helm/platform-automation -f user-configs/user3.yaml &
-wait
-```
-
-Or create a bash script `deploy-all.sh`:
-
-```bash
-#!/bin/bash
-for config in user-configs/*.yaml; do
-  username=$(basename "$config" .yaml)
-  echo "Deploying $username..."
-  helm install "$username" helm/platform-automation -f "$config"
-done
-```
-
-Make it executable and run:
-
-```bash
-chmod +x deploy-all.sh
-./deploy-all.sh
+npm run docker:build
 ```
 
 ## Common Commands
-
-### Development
-
-```bash
-# Build TypeScript locally
-cd source && npm run build
-
-# Run locally (dev mode)
-cd source && npm run dev
-
-# Run compiled version
-cd source && npm start
-```
 
 ### Docker
 
@@ -309,8 +296,8 @@ cd source && npm start
 # Build image
 npm run docker:build
 
-# Remove image and uninstall
-npm run docker:imgrm
+# Remove image
+docker image rm online-platform-automation:dev
 
 # Full rebuild and deploy
 npm run auto
@@ -319,22 +306,22 @@ npm run auto
 ### Helm
 
 ```bash
-# Install with custom release name
+# Install
 helm install <name> helm/platform-automation -f user-configs/<user>.yaml
 
-# Upgrade existing deployment
+# Upgrade
 helm upgrade <name> helm/platform-automation -f user-configs/<user>.yaml
 
-# Uninstall deployment
+# Uninstall
 helm uninstall <name>
 
-# List all deployments
+# List deployments
 helm list
 
-# Get deployment values
+# Get values
 helm get values <name>
 
-# Dry-run to validate
+# Dry-run (validate before deploy)
 helm install <name> helm/platform-automation -f user-configs/<user>.yaml --dry-run --debug
 ```
 
@@ -351,80 +338,126 @@ kubectl logs -l app=<release-name> -f
 kubectl describe pod <pod-name>
 
 # Execute into container
-kubectl exec -it <pod-name> -- /bin/sh
+kubectl exec -it <pod-name> -- sh
 
-# Delete pod (will be recreated by deployment)
+# Delete pod (will be recreated)
 kubectl delete pod <pod-name>
-
-# View deployments
-kubectl get deployments
 
 # Scale deployment
 kubectl scale deployment <release-name> --replicas=2
+```
+
+## API Endpoints
+
+### GET /status
+
+Returns detailed service status with stage information:
+
+```json
+{
+    "username": "user1",
+    "status": "healthy",
+    "timestamp": "2025-12-03T14:00:00.000Z",
+    "startTime": "2025-12-03T13:00:00.000Z",
+    "currentStage": "workflow_completed",
+    "executionCount": 42,
+    "stageStatus": {
+        "initialization": {
+            "maxRetries": 3,
+            "currentRetries": 0,
+            "lastAttempt": "2025-12-03T13:00:01.000Z",
+            "lastError": null,
+            "success": true,
+            "lastSuccessTime": "2025-12-03T13:00:01.500Z"
+        },
+        "workflowExecution": {
+            "maxRetries": 5,
+            "currentRetries": 0,
+            "success": true,
+            "lastSuccessTime": "2025-12-03T13:05:23.000Z"
+        }
+    },
+    "message": "Automation service running"
+}
+```
+
+### GET /health
+
+Basic health check for Kubernetes liveness probe:
+
+```json
+{
+    "status": "ok",
+    "timestamp": "2025-12-03T14:00:00.000Z"
+}
+```
+
+### GET /ready
+
+Readiness probe with detailed status:
+
+```json
+{
+    "ready": true,
+    "status": "healthy",
+    "currentStage": "workflow_completed",
+    "timestamp": "2025-12-03T14:00:00.000Z"
+}
+```
+
+### GET /metrics
+
+Prometheus-compatible metrics for monitoring:
+
+```
+automation_uptime_seconds 3600
+automation_execution_count 42
+automation_status 2
+automation_stage_success{stage="initialization"} 1
+automation_stage_success{stage="workflowExecution"} 1
+automation_stage_retries{stage="initialization"} 0
+automation_stage_retries{stage="workflowExecution"} 0
 ```
 
 ## Troubleshooting
 
 ### Pod Not Starting
 
-Check pod status and events:
-
 ```bash
 kubectl describe pod <pod-name>
 kubectl logs <pod-name>
 ```
 
-Common issues:
-- Image not found: Ensure Docker image is built and available
-- ImagePullBackOff: Check image name and pull policy
-- CrashLoopBackOff: Check application logs for errors
+**Common causes:**
+- Image not found: Rebuild image or check image name
+- ImagePullBackOff: Set `pullPolicy: IfNotPresent` or `Never`
+- CrashLoopBackOff: Check application logs
 
 ### Image Pull Errors
 
-If using local images, ensure proper image pull policy:
-
-```yaml
-image:
-  pullPolicy: IfNotPresent  # or Never for local-only images
-```
-
-For Minikube, load the image:
-
+For local images with Minikube:
 ```bash
 minikube image load online-platform-automation:dev
 ```
 
-For Docker Desktop, ensure the image exists:
-
+For Docker Desktop: Ensure image exists
 ```bash
 docker images | grep online-platform-automation
 ```
 
 ### Configuration Issues
 
-Validate Helm chart:
-
 ```bash
+# Validate Helm chart
 helm lint helm/platform-automation
+
+# Preview rendered templates
 helm template test helm/platform-automation -f user-configs/user1.yaml
-```
-
-### Viewing Application Logs
-
-```bash
-# Follow logs in real-time
-kubectl logs -l app=<release-name> -f
-
-# Get logs from all pods with label
-kubectl logs -l app=<release-name> --all-containers=true
-
-# Get previous container logs (if crashed)
-kubectl logs <pod-name> --previous
 ```
 
 ### Resource Constraints
 
-If pods are being evicted or OOMKilled, adjust resources in user config:
+If pods are evicted or OOMKilled:
 
 ```yaml
 resources:
@@ -436,25 +469,74 @@ resources:
     memory: 512Mi
 ```
 
-## Environment Variables
+### View Resource Usage
 
-The application uses these environment variables (configured via Helm):
+```bash
+kubectl top pods
+kubectl top nodes
+```
 
-- `USERNAME`: Platform username
-- `PASSWORD`: Platform password
-- `HOME_URL`: Platform home URL
-- `EMAIL_PREFIX`: Email prefix for notifications
-- `TARGET_URL`: Target resource/session URL
-- `LOG_LEVEL`: Logging verbosity (`debug`, `info`, `warn`, `error`)
-- `HEADLESS`: Browser headless mode (1 or 0)
+## Managing Multiple Users
+
+### Batch Deployment Script
+
+Create `deploy-all.sh`:
+
+```bash
+#!/bin/bash
+for config in user-configs/*.yaml; do
+  username=$(basename "$config" .yaml)
+  echo "Deploying $username..."
+  helm install "$username" helm/platform-automation -f "$config"
+done
+```
+
+Run:
+```bash
+chmod +x deploy-all.sh
+./deploy-all.sh
+```
+
+### List All Instances
+
+```bash
+helm list
+kubectl get pods -o wide
+```
+
+## Documentation
+
+- **[Technical Documentation](TECHNICAL_DOCUMENTATION.md)** - Detailed architecture, APIs, and system design
+- **[README](README.md)** - This file (quick start and usage)
+
+## Security Best Practices
+
+- Never commit `.env` files or secrets
+- Use Kubernetes Secrets for sensitive data
+- Set resource limits to prevent resource hogging
+- Use network policies for pod isolation
+- Implement RBAC for namespace-scoped access
+- Regularly update dependencies
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Implement your changes
+4. Test thoroughly
+5. Submit a pull request
 
 ## License
 
-See repository for license information.
+MIT License - See LICENSE file for details
 
-## Author
+## Support
 
-**NeoHBz**
-- Email: neohbz@gmail.com
-- Website: https://neohbz.com
-- GitHub: [@NeoHBz](https://github.com/NeoHBz)
+For issues or questions:
+- Check [Technical Documentation](TECHNICAL_DOCUMENTATION.md)
+- Review troubleshooting section above
+- Open an issue on GitHub
+
+---
+
+Made with ❤️ for the Kubernetes community

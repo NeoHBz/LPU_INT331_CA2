@@ -1,13 +1,6 @@
 import express, { Request, Response } from "express";
-import puppeteer, { Browser, Cookie, Page } from "puppeteer";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc";
-import timezone from "dayjs/plugin/timezone";
-import isBetween from "dayjs/plugin/isBetween";
-import customParseFormat from "dayjs/plugin/customParseFormat";
 import Logger from "./utils/logger";
 import * as dotenv from "dotenv";
-import * as fs from "fs";
 import * as path from "path";
 import { Mutex } from "async-mutex";
 
@@ -18,24 +11,16 @@ dotenv.config({
 });
 console.log("Loaded ENV file:", envFile);
 
-dayjs.extend(utc);
-dayjs.extend(timezone);
-dayjs.extend(isBetween);
-dayjs.extend(customParseFormat);
 const app = express();
 const PORT = process.env.PORT || 3000;
-const tzLocation = "Asia/Kolkata";
-const monitorExecutionInterval = 30000;
-const MAX_SCREENSHOTS_PER_USER = 50;
+const MONITORING_INTERVAL = 30000; // 30 seconds
 
-// Define execution stages
+// Execution stages for workflow tracking
 enum ExecutionStage {
     INITIAL = "initial",
-    BROWSER_LAUNCHED = "browser_launched",
-    USER_LOGGED_IN = "user_logged_in",
-    LOGIN_VERIFIED = "login_verified",
-    GOT_TODAY_CLASSES = "got_today_classes",
-    CLASS_JOINED = "class_joined",
+    INITIALIZED = "initialized",
+    WORKFLOW_RUNNING = "workflow_running",
+    WORKFLOW_COMPLETED = "workflow_completed",
     FAILED = "failed",
 }
 
@@ -43,18 +28,10 @@ type TConfig = {
     username: string;
     password: string;
     platformHomeUrl: string;
-    studentEmailPostfix: string;
+    emailPrefix: string;
     targetPlatformURL: string;
 };
 
-type LectureData = {
-    title: string;
-    href: string;
-    time: string; // '7:01 - 7:59'
-    lectureName: string;
-};
-
-// Define retry configuration for each function
 type RetryConfig = {
     maxRetries: number;
     currentRetries: number;
@@ -72,45 +49,50 @@ const configInit: TConfig = {
     username: process.env.USERNAME as string,
     password: process.env.PASSWORD as string,
     platformHomeUrl: process.env.HOME_URL as string,
-    studentEmailPostfix: process.env.EMAIL_PREFIX as string,
+    emailPrefix: process.env.EMAIL_PREFIX as string,
     targetPlatformURL: process.env.TARGET_URL as string,
 };
 
-Logger.debug("Config:", {
-    ...configInit,
-    password: configInit.password.replace(/./g, "*"),
+Logger.debug("Config loaded:", {
+    username: configInit.username,
+    platformHomeUrl: configInit.platformHomeUrl,
+    password: "***REDACTED***",
 });
 
 class Automation {
     config: TConfig;
-    browser: Browser | null;
-    pages: Page[] | null;
     startTime: string;
-    sessions!: LectureData[] | null;
+    systemStatus: "healthy" | "degraded" | "failed";
     currentStage: ExecutionStage;
     stageStatus: StageStatus;
-    activeSessionLink: string | null;
-    systemStatus: "healthy" | "degraded" | "failed";
     monitoringInterval: NodeJS.Timeout | null;
+    executionCount: number;
     private monitoringMutex: Mutex;
-    private userDetectionFaultTolerance: number = 1 / 3; // At least 1 out of 3 methods must succeed
+    private workflowMutex: Mutex;
 
     constructor(config: TConfig) {
-        Logger.debug("Platform Automation constructor called");
+        Logger.info("Platform Automation initialized");
         this.config = config;
         this.validateConfig();
-        this.browser = null;
-        this.pages = null;
-        this.startTime = dayjs().tz(tzLocation).format("YYYY-MM-DD HH:mm:ss");
-        this.currentStage = ExecutionStage.INITIAL;
-        this.activeSessionLink = null;
+        this.startTime = new Date().toISOString();
         this.systemStatus = "healthy";
+        this.currentStage = ExecutionStage.INITIAL;
         this.monitoringInterval = null;
         this.monitoringMutex = new Mutex();
+        this.workflowMutex = new Mutex();
+        this.executionCount = 0;
 
-        // Initialize retry configuration for each stage/function
+        // Initialize retry configuration for workflow stages
         this.stageStatus = {
-            launchBrowser: {
+            initialization: {
+                maxRetries: 3,
+                currentRetries: 0,
+                lastAttempt: null,
+                lastError: null,
+                success: false,
+                lastSuccessTime: null,
+            },
+            workflowExecution: {
                 maxRetries: 5,
                 currentRetries: 0,
                 lastAttempt: null,
@@ -118,40 +100,8 @@ class Automation {
                 success: false,
                 lastSuccessTime: null,
             },
-            userLogin: {
+            healthCheck: {
                 maxRetries: 3,
-                currentRetries: 0,
-                lastAttempt: null,
-                lastError: null,
-                success: false,
-                lastSuccessTime: null,
-            },
-            verifyUserLogin: {
-                maxRetries: 3,
-                currentRetries: 0,
-                lastAttempt: null,
-                lastError: null,
-                success: false,
-                lastSuccessTime: null,
-            },
-            getTodaysSessions: {
-                maxRetries: 3,
-                currentRetries: 0,
-                lastAttempt: null,
-                lastError: null,
-                success: false,
-                lastSuccessTime: null,
-            },
-            getSessionLinkFromSchedule: {
-                maxRetries: 2,
-                currentRetries: 0,
-                lastAttempt: null,
-                lastError: null,
-                success: false,
-                lastSuccessTime: null,
-            },
-            joinSession: {
-                maxRetries: 4,
                 currentRetries: 0,
                 lastAttempt: null,
                 lastError: null,
@@ -161,91 +111,39 @@ class Automation {
         };
     }
 
-    private async cleanupOldScreenshots(userId: string) {
-        try {
-            const dirPath = path.join("screenshots", userId.toString());
-            if (!fs.existsSync(dirPath)) return;
+    async validateConfig() {
+        Logger.debug("Validating configuration...");
+        const missingVars = Object.entries(this.config)
+            .filter(([_, value]) => !value)
+            .map(([key]) => key);
 
-            const files = await fs.promises.readdir(dirPath);
-            if (files.length <= MAX_SCREENSHOTS_PER_USER) return;
-
-            // Sort files by creation time (oldest first)
-            const fileStats = await Promise.all(
-                files.map(async (file) => {
-                    const filePath = path.join(dirPath, file);
-                    const stats = await fs.promises.stat(filePath);
-                    return { file, path: filePath, ctime: stats.ctime };
-                }),
-            );
-
-            fileStats.sort((a, b) => a.ctime.getTime() - b.ctime.getTime());
-
-            // Delete oldest files
-            const filesToDelete = fileStats.slice(
-                0,
-                fileStats.length - MAX_SCREENSHOTS_PER_USER,
-            );
-
-            for (const fileInfo of filesToDelete) {
-                await fs.promises.unlink(fileInfo.path);
-                Logger.debug(`Deleted old screenshot: ${fileInfo.path}`);
-            }
-
-            Logger.info(
-                `Cleaned up ${filesToDelete.length} old screenshots for user ${userId}`,
-            );
-        } catch (error) {
-            Logger.error(`Failed to clean up old screenshots: ${error}`);
+        if (missingVars.length > 0) {
+            Logger.error(`Missing environment variables: ${missingVars.join(", ")}`);
+            this.systemStatus = "failed";
+            this.currentStage = ExecutionStage.FAILED;
+            return;
         }
+        Logger.info("Configuration validated successfully");
     }
 
-    public async captureScreenshot(
-        page: any,
-        saveToFile: boolean = true,
-    ): Promise<Buffer | null> {
-        try {
-            Logger.debug("Capturing screenshot...");
-            const screenshot = await page.screenshot({ 
-                fullPage: true,
-                type: 'png',
-                encoding: 'binary'
-            });
-
-            if (saveToFile) {
-                const userId = this.config.username || "default";
-                const timestamp = Date.now();
-                const dirPath = path.join("screenshots", userId.toString());
-                fs.mkdirSync(dirPath, { recursive: true });
-                Logger.debug(`Screenshot directory created: ${dirPath}`);
-                const screenshotPath = path.join(dirPath, `${timestamp}.png`);
-                Logger.debug(`Screenshot path: ${screenshotPath}`);
-                await fs.promises.writeFile(screenshotPath, screenshot);
-                Logger.info(`Screenshot saved: ${screenshotPath}`);
-
-                // Clean up old screenshots
-                await this.cleanupOldScreenshots(userId);
-            }
-
-            return screenshot;
-        } catch (err) {
-            Logger.error(`Failed to capture screenshot: ${err}`);
-            return null; // Return null explicitly on error
-        }
-    }
-
+    /**
+     * Start monitoring loop for automated health checks and workflow management
+     */
     startMonitoring() {
         if (this.monitoringInterval) {
             clearInterval(this.monitoringInterval);
         }
 
-        // Set up monitoring loop to run every minute
         this.monitoringInterval = setInterval(
             () => this.monitorExecution(),
-            monitorExecutionInterval,
+            MONITORING_INTERVAL,
         );
-        Logger.info("Started monitoring execution");
+        Logger.info(`Started monitoring execution (interval: ${MONITORING_INTERVAL}ms)`);
     }
 
+    /**
+     * Stop monitoring loop
+     */
     stopMonitoring() {
         if (this.monitoringInterval) {
             clearInterval(this.monitoringInterval);
@@ -254,113 +152,65 @@ class Automation {
         }
     }
 
+    /**
+     * Monitoring execution loop with mutex protection
+     * Prevents concurrent execution cycles
+     */
     async monitorExecution() {
-        // Use mutex with timeout to prevent cycle starvation
+        // Use mutex to prevent cycle starvation
         if (this.monitoringMutex.isLocked()) {
             Logger.debug("Previous monitoring cycle still running, skipping");
             return;
         }
 
-        // Add a timeout to the mutex acquisition
         const release = await this.monitoringMutex.acquire().catch(() => null);
         if (!release) {
             Logger.error("Failed to acquire monitoring mutex, skipping cycle");
             return;
         }
-        
+
         try {
             Logger.debug(`Monitoring execution. Current stage: ${this.currentStage}`);
-
-            // Check browser connectivity first
-            if (
-                this.browser &&
-                !this.browser.connected &&
-                this.currentStage !== ExecutionStage.INITIAL
-            ) {
-                Logger.error("Browser connection lost, attempting to relaunch");
-                this.currentStage = ExecutionStage.INITIAL;
-                this.stageStatus.launchBrowser.success = false;
-                this.updateSystemStatus();
-            }
 
             // Based on current stage, determine what needs to be executed
             switch (this.currentStage) {
                 case ExecutionStage.INITIAL:
-                    if (!this.stageStatus.launchBrowser.success) {
-                        await this.attemptStage("launchBrowser");
-                    }
+                    await this.attemptStage("initialization");
                     break;
 
-                case ExecutionStage.BROWSER_LAUNCHED:
-                    if (!this.stageStatus.userLogin.success) {
-                        await this.attemptStage("userLogin");
-                    }
+                case ExecutionStage.INITIALIZED:
+                    await this.attemptStage("workflowExecution");
                     break;
 
-                case ExecutionStage.USER_LOGGED_IN:
-                    if (!this.stageStatus.verifyUserLogin.success) {
-                        await this.attemptStage("verifyUserLogin");
-                    }
+                case ExecutionStage.WORKFLOW_RUNNING:
+                    Logger.debug("Workflow currently running...");
+                    await this.attemptStage("healthCheck");
                     break;
 
-                case ExecutionStage.LOGIN_VERIFIED:
-                    if (!this.stageStatus.getTodaysClass.success) {
-                        await this.attemptStage("getTodaysClass");
-                    }
-                    break;
-
-                case ExecutionStage.GOT_TODAY_CLASSES:
-                    if (this.sessions && this.sessions.length > 0) {
-                        const sessionLinkPath = await this.getSessionLinkFromSchedule(
-                            this.sessions,
-                        );
-                        if (sessionLinkPath) {
-                            this.activeSessionLink = `${this.config.targetPlatformURL}${sessionLinkPath}`;
-                            await this.attemptStage("joinSession");
-                        } else {
-                            // No active session, check again after some time
-                            Logger.info(
-                                "No active session found, will check again in the next monitoring cycle",
-                            );
-                        }
-                    }
-                    break;
-
-                case ExecutionStage.CLASS_JOINED:
-                    // Check if session is still active
-                    if (this.sessions && this.sessions.length > 0) {
-                        const isStillActive = await this.checkIfSessionIsStillActive();
-                        if (!isStillActive) {
-                            Logger.info("Current session has ended");
-                            this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
-                            this.stageStatus.joinSession.success = false;
-                        }
-                        Logger.info("Session is still active");
-                    }
+                case ExecutionStage.WORKFLOW_COMPLETED:
+                    Logger.info("Workflow completed successfully");
+                    // Could restart or wait for external trigger
                     break;
 
                 case ExecutionStage.FAILED:
-                    // Check what stage failed and try to recover
+                    Logger.error("System in failed state, attempting recovery");
                     const failedStage = this.findFailedStage();
                     if (
                         failedStage &&
                         this.stageStatus[failedStage].currentRetries <
                             this.stageStatus[failedStage].maxRetries
                     ) {
-                        Logger.info(
-                            `Attempting to recover from failed stage: ${failedStage}`,
-                        );
-                        // Reset current stage to before the failed stage
-                        this.setStageBeforeFailedStage(failedStage);
+                        Logger.info(`Attempting to recover from failed stage: ${failedStage}`);
+                        this.resetStageBeforeFailure(failedStage);
                         this.systemStatus = "degraded";
                     } else {
-                        Logger.error("Maximum retries exceeded, system in failed state");
+                        Logger.error("Maximum retries exceeded, system remains failed");
                         this.systemStatus = "failed";
                     }
                     break;
             }
         } catch (error: any) {
-            Logger.error(`Error in monitoring execution: ${error}`);
+            Logger.error(`Error in monitoring execution: ${error.message || error}`);
             this.systemStatus = "degraded";
         } finally {
             release();
@@ -369,61 +219,53 @@ class Automation {
         this.updateSystemStatus();
     }
 
-    setStageBeforeFailedStage(failedStage: string) {
+    /**
+     * Reset system to stage before failure for retry
+     */
+    resetStageBeforeFailure(failedStage: string) {
         switch (failedStage) {
-            case "launchBrowser":
+            case "initialization":
                 this.currentStage = ExecutionStage.INITIAL;
                 break;
-            case "userLogin":
-                this.currentStage = ExecutionStage.BROWSER_LAUNCHED;
+            case "workflowExecution":
+                this.currentStage = ExecutionStage.INITIALIZED;
                 break;
-            case "verifyUserLogin":
-                this.currentStage = ExecutionStage.USER_LOGGED_IN;
-                break;
-            case "getTodaysSessions":
-                this.currentStage = ExecutionStage.LOGIN_VERIFIED;
-                break;
-            case "getSessionLinkFromSchedule":
-            case "joinSession":
-                this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
+            case "healthCheck":
+                this.currentStage = ExecutionStage.WORKFLOW_RUNNING;
                 break;
             default:
                 this.currentStage = ExecutionStage.INITIAL;
         }
     }
 
+    /**
+     * Find which stage failed
+     */
     findFailedStage(): string | null {
-        const stages = [
-            "launchBrowser",
-            "userLogin",
-            "verifyUserLogin",
-            "getTodaysSessions",
-            "getSessionLinkFromSchedule",
-            "joinSession",
-        ];
-
+        const stages = Object.keys(this.stageStatus);
         for (const stage of stages) {
             if (!this.stageStatus[stage].success) {
                 return stage;
             }
         }
-
         return null;
     }
 
+    /**
+     * Update overall system status based on stage progress
+     */
     updateSystemStatus() {
         if (this.currentStage === ExecutionStage.FAILED) {
             if (
                 Object.values(this.stageStatus).some(
-                    (status) =>
-                        status.currentRetries < status.maxRetries && !status.success,
+                    (status) => status.currentRetries < status.maxRetries && !status.success,
                 )
             ) {
                 this.systemStatus = "degraded";
             } else {
                 this.systemStatus = "failed";
             }
-        } else if (this.currentStage === ExecutionStage.CLASS_JOINED) {
+        } else if (this.currentStage === ExecutionStage.WORKFLOW_COMPLETED) {
             this.systemStatus = "healthy";
         } else {
             const totalStages = Object.keys(this.stageStatus).length;
@@ -441,245 +283,10 @@ class Automation {
         }
     }
 
-    async checkIfSessionIsStillActive(): Promise<boolean> {
-        Logger.debug(`Starting session activity check`);
-        if (!this.sessions || this.sessions.length === 0) {
-            Logger.debug(`No sessions found, session cannot be active`);
-            return false;
-        }
-
-        try {
-            const page = this.pages?.[0];
-            if (!page) {
-                await this.handleError(
-                    "Page allocation failed while checking if session is still active",
-                    "checkIfSessionIsStillActive",
-                );
-                return false;
-            }
-
-            Logger.debug(`Waiting for selector: iframe#frame`);
-            await page.waitForSelector("iframe#frame", { timeout: 20000 });
-            Logger.debug(`Accessing class iframe`);
-            const iframe = page
-                .frames()
-                .find((f) => f.name() === "frame" || f.url().includes("frame"));
-            if (!iframe) {
-                await this.handleError("Could not access class iframe!", "joinClass");
-                await this.captureScreenshot(page);
-                return false;
-            }
-            Logger.debug(`Successfully acquired iframe reference`);
-
-            // Try to detect user presence without opening the users panel first
-            try {
-                // Method 1: Check for user presence via direct page content
-                Logger.debug(`Attempting direct page content detection method`);
-                const pageContent = await iframe.content();
-                const hasUserInContent = pageContent.includes(this.config.username);
-                const hasYouText = pageContent.includes("(You)");
-                Logger.debug(`Direct content check - Username found: ${hasUserInContent}, (You) text found: ${hasYouText}`);
-
-                if (hasUserInContent || hasYouText) {
-                    Logger.info(`User detected directly in page content`);
-                    return true;
-                }
-            } catch (error) {
-                Logger.debug(`Direct page content check failed: ${error}`);
-                // Continue to more detailed checks
-            }
-
-            // Only open the users panel if necessary
-            try {
-                Logger.debug(`Looking for users button`);
-                const usersButtonSelectors = [
-                    'button[aria-label="Users and messages toggle"]',
-                    'button[aria-label="Users and messages toggle with new message notification"]',
-                ];
-
-                let usersButton = null;
-                for (const selector of usersButtonSelectors) {
-                    try {
-                        Logger.debug(`Trying selector: ${selector}`);
-                        usersButton = await iframe.waitForSelector(selector, {
-                            timeout: 10000,
-                        });
-                        if (usersButton) {
-                            Logger.debug(`Found users button with selector: ${selector}`);
-                            break;
-                        }
-                    } catch (error) {
-                        Logger.debug(`Selector ${selector} not found, trying next`);
-                        // Try next selector
-                    }
-                }
-
-                if (!usersButton) {
-                    Logger.debug(
-                        "Unable to find users button, but assuming user is still in session",
-                    );
-                    return true; // User is likely still in session if we can access the iframe
-                }
-
-                Logger.debug(`Clicking on users button`);
-                await usersButton.click();
-                Logger.info(`Clicked on: Users button`);
-
-                Logger.debug(`Waiting for selector: div[aria-label="grid"]`);
-                const grid = await iframe.waitForSelector('div[aria-label="grid"]', {
-                    timeout: 10000,
-                });
-                if (!grid) {
-                    await this.captureScreenshot(page);
-                    Logger.debug(
-                        "Grid not found, but continuing as user may still be in session",
-                    );
-                    return true;
-                }
-
-                Logger.info(`Grid found!`);
-
-                // Use all methods with fault tolerance
-                Logger.debug(`Checking for user presence with fault tolerance`);
-                const userId = this.config.username;
-                Logger.debug(`Checking for user ID: ${userId}`);
-
-                // Track successful methods
-                let successfulMethods = 0;
-                let totalMethods = 0; // Increment this only for methods that run without error
-
-                // Method 1: Check by aria-label Content
-                try {
-                    totalMethods++;
-                    Logger.debug(
-                        `Method 1: Checking if user ${userId} exists by aria-label`,
-                    );
-                    const userByAriaLabel = await iframe.$(
-                        `div[aria-label*="${userId}"]`,
-                    );
-                    if (userByAriaLabel) {
-                        Logger.debug(`Method 1 result: User found!`);
-                        successfulMethods++;
-                    } else {
-                        Logger.debug(`Method 1 result: User not found by aria-label`);
-                    }
-                } catch (error) {
-                    Logger.error(`Method 1 error: ${error}`);
-                }
-
-                // Method 2: Check by Text Content in userNameMain element
-                try {
-                    totalMethods++;
-                    Logger.debug(
-                        `Method 2: Checking if user ${userId} exists in userNameMain element`,
-                    );
-                    const userNameElements = await iframe.$$(".userNameMain--2fo2zM");
-                    Logger.debug(`Found ${userNameElements.length} userNameMain elements to check`);
-
-                    let found = false;
-                    for (const element of userNameElements) {
-                        try {
-                            const textContent = await element.evaluate(
-                                (el) => el.textContent,
-                            );
-                            Logger.debug(`Element text content: "${textContent}"`);
-                            if (textContent && textContent.includes(userId)) {
-                                Logger.debug(`Method 2 result: User found!`);
-                                successfulMethods++;
-                                found = true;
-                                break;
-                            }
-                        } catch (detachedError) {
-                            Logger.debug(`Element detached during evaluation: ${detachedError}`);
-                            // Element might have been detached, continue with other elements
-                        }
-                    }
-                    if (!found) {
-                        Logger.debug(`Method 2 result: User not found in any userNameMain element`);
-                    }
-                } catch (error) {
-                    Logger.error(`Method 2 error: ${error}`);
-                }
-
-                // Method 3: Check for (You) text or username in grid
-                try {
-                    totalMethods++;
-                    Logger.debug(`Method 3: Checking for (You) text or username`);
-
-                    try {
-                        const gridContent = await grid.evaluate((el) => el.textContent);
-                        Logger.debug(`Grid content (truncated): ${gridContent?.substring(0, 100)}...`);
-                        const hasUser = gridContent && gridContent.includes(userId);
-                        const hasYouText = gridContent && gridContent.includes("(You)");
-                        Logger.debug(`Grid check - Username found: ${hasUser}, (You) text found: ${hasYouText}`);
-
-                        if (hasUser || hasYouText) {
-                            Logger.debug(
-                                `Method 3 result: ${
-                                    hasUser ? "Username found!" : "(You) text found!"
-                                }`,
-                            );
-                            successfulMethods++;
-                        } else {
-                            Logger.debug(`Method 3 result: Neither username nor (You) text found in grid`);
-                        }
-                    } catch (detachedError) {
-                        Logger.debug(`Grid element detached during evaluation: ${detachedError}`);
-                    }
-                } catch (error) {
-                    Logger.error(`Method 3 error: ${error}`);
-                }
-
-                // Take a screenshot for verification
-                Logger.debug(`Taking verification screenshot`);
-                await this.captureScreenshot(page);
-
-                // Try to close the users panel gracefully
-                try {
-                    if (usersButton) {
-                        Logger.debug(`Attempting to close users panel`);
-                        await usersButton.click();
-                        Logger.debug(`Users panel closed`);
-                    }
-                } catch (error) {
-                    Logger.debug(`Failed to close users panel: ${error}`);
-                }
-
-                // Calculate success rate (only if we had methods that ran)
-                if (totalMethods > 0) {
-                    const successRate = successfulMethods / totalMethods;
-                    Logger.info(
-                        `User detection success rate: ${successRate} (${successfulMethods}/${totalMethods})`,
-                    );
-
-                    const isUserPresent = successRate >= this.userDetectionFaultTolerance;
-                    Logger.info(
-                        isUserPresent
-                            ? `User detected in session with sufficient confidence`
-                            : `User may not be in session anymore, detection confidence: ${successRate}`,
-                    );
-                    return isUserPresent;
-                }
-
-                Logger.info(
-                    `No detection methods succeeded, something went wrong, assuming user has left session`,
-                );
-                return false;
-            } catch (error) {
-                // If we fail here but we already accessed the iframe, assume user is still in session
-                Logger.error(`Error in user panel operations: ${error}`);
-                Logger.debug(`We could access iframe, so assuming user is still in session despite error`);
-                return true;
-            }
-        } catch (error: any) {
-            Logger.error(`Error checking if session is still active: ${error}`);
-            Logger.debug(`Major error in session activity check, returning false to be safe`);
-            // If we can't verify, assume the session is not active as a safer default
-            return false;
-        }
-    }
-
-    async attemptStage(stageName: string) {
+    /**
+     * Attempt to execute a specific stage with retry logic
+     */
+    async attemptStage(stageName: string): Promise<boolean> {
         try {
             if (
                 this.stageStatus[stageName].currentRetries >=
@@ -693,31 +300,18 @@ class Automation {
             }
 
             // Update lastAttempt timestamp
-            this.stageStatus[stageName].lastAttempt = dayjs()
-                .tz(tzLocation)
-                .format("YYYY-MM-DD HH:mm:ss");
+            this.stageStatus[stageName].lastAttempt = new Date().toISOString();
 
             let result: boolean = false;
             switch (stageName) {
-                case "launchBrowser":
-                    result = await this.launchBrowser();
+                case "initialization":
+                    result = await this.initialize();
                     break;
-                case "userLogin":
-                    result = await this.userLogin();
+                case "workflowExecution":
+                    result = await this.executeWorkflow();
                     break;
-                case "verifyUserLogin":
-                    result = await this.verifyUserLogin();
-                    break;
-                case "getTodaysSessions":
-                    result = await this.getTodaysSessions();
-                    break;
-                case "joinSession":
-                    if (this.activeSessionLink) {
-                        result = await this.joinSession(this.activeSessionLink);
-                    } else {
-                        Logger.error("No active session link available");
-                        result = false;
-                    }
+                case "healthCheck":
+                    result = await this.performHealthCheck();
                     break;
                 default:
                     Logger.error(`Unknown stage: ${stageName}`);
@@ -727,9 +321,7 @@ class Automation {
             // Update status
             if (result) {
                 this.stageStatus[stageName].success = true;
-                this.stageStatus[stageName].lastSuccessTime = dayjs()
-                    .tz(tzLocation)
-                    .format("YYYY-MM-DD HH:mm:ss");
+                this.stageStatus[stageName].lastSuccessTime = new Date().toISOString();
                 this.stageStatus[stageName].lastError = null;
             } else {
                 this.stageStatus[stageName].success = false;
@@ -748,409 +340,118 @@ class Automation {
         }
     }
 
-    private async handleError(message: string, functionName?: string) {
-        Logger.error(message, functionName);
-        if (this.pages) {
-            for (const page of this.pages) {
-                await this.captureScreenshot(page);
-            }
-        }
-        if (functionName && this.stageStatus[functionName]) {
-            this.stageStatus[functionName].lastError = message;
-            this.stageStatus[functionName].success = false;
-        }
-    }
-
-    async validateConfig() {
-        Logger.debug("Validating config...");
-        const missingVars = Object.entries(this.config)
-            .filter(([_, value]) => !value)
-            .map(([key]) => key);
-
-        if (missingVars.length > 0) {
-            await this.handleError(
-                `Missing environment variables: ${missingVars.join(", ")}`,
-            );
-            return;
-        }
-    }
-
-    async launchBrowser(): Promise<boolean> {
+    /**
+     * Initialization stage - prepare system resources
+     */
+    async initialize(): Promise<boolean> {
         try {
-            Logger.debug("Launching browser...");
-            this.browser = await puppeteer.launch({
-                // devtools: true,
-                headless: process.env.HEADLESS?.toLowerCase() === "1",
-                defaultViewport: null,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-                args: [
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--ignore-certificate-errors",
-                    "--ignore-certificate-errors-spki-list",
-                    "--single-process",
-                    "--no-zygote",
-                    "--no-first-run",
-                    "--disable-extensions",
-                    "--user-data-dir=/tmp/chromium-user-data"
-                ],
-            });
-            const browserVer = await this.browser.version();
-            if (!browserVer) {
-                await this.handleError(
-                    "Failed to launch browser instance",
-                    "launchBrowser",
-                );
-                return false;
-            }
-            Logger.info(`Browser launched: ${browserVer}`);
-
-            if (!(await this.browser.pages()).length) {
-                Logger.info(`No browser pages found, opening new page.`);
-                await this.browser.newPage();
-            }
-            Logger.debug("Assigning browser pages to class variables");
-            this.pages = await this.browser.pages();
-            this.pages.forEach((page) => page.setDefaultNavigationTimeout(60000));
-            await this.disablePageImages();
-            // await this.openDevTools();
-            this.currentStage = ExecutionStage.BROWSER_LAUNCHED;
+            Logger.info("Initializing automation system...");
+            
+            // TODO: Add your initialization logic
+            // Examples:
+            // - Connect to databases
+            // - Initialize external clients
+            // - Load configuration files
+            // - Set up resources
+            
+            this.currentStage = ExecutionStage.INITIALIZED;
+            Logger.info("System initialized successfully");
             return true;
         } catch (error: any) {
-            await this.handleError(
-                `Error launching browser: ${error.message || error}`,
-                "launchBrowser",
-            );
+            Logger.error(`Initialization failed: ${error.message || error}`);
             return false;
         }
     }
 
-    async disablePageImages() {
-        this.pages?.forEach(async (page) => {
-            await page.setRequestInterception(true);
-            page.on("request", (request) => {
-                if (request.resourceType() === "image") {
-                    request.abort();
-                } else {
-                    request.continue();
-                }
-            });
-        });
-    }
+    /**
+     * Main workflow execution with mutex protection
+     */
+    async executeWorkflow(): Promise<boolean> {
+        // Use mutex to prevent concurrent workflow execution
+        if (this.workflowMutex.isLocked()) {
+            Logger.debug("Workflow already running, skipping execution");
+            return true;
+        }
 
-    async openDevTools() {
-        const targets = await this.browser?.targets();
-        const devtoolsTarget = targets?.find((t) => {
-            return t.type() === "other" && t.url().startsWith("devtools://");
-        });
+        const release = await this.workflowMutex.acquire().catch(() => null);
+        if (!release) {
+            Logger.error("Failed to acquire workflow mutex");
+            return false;
+        }
 
-        const client = await devtoolsTarget?.createCDPSession();
-        await client?.send("Runtime.enable");
-
-        await client?.send("Runtime.evaluate", {
-            expression: `
-                window.UI.viewManager.showView('network');
-                window.UI.dockController.setDockSide('bottom');
-            `,
-        });
-
-        await client?.send("Network.enable");
-    }
-
-    async userLogin(): Promise<boolean> {
         try {
-            Logger.info(`Logging in as user: ${this.config.username}`);
-            const page = this.pages?.[0];
-            if (!page) {
-                await this.handleError(
-                    "Page allocation failed while logging in as user",
-                    "userLogin",
-                );
-                return false;
-            }
-            Logger.debug(`Redirecting page to url: ${this.config.platformHomeUrl}`);
-            await page.goto(this.config.platformHomeUrl);
-            Logger.debug(`Waiting for selector: Login Form Submit Button`);
-            await page.waitForSelector('button[type="submit"]');
-            Logger.debug(`Filling in username: ${this.config.username}`);
-            await page.type('input[placeholder="Username"]', this.config.username);
-            Logger.debug(
-                `Filling in password: ${this.config.password.replace(/./g, "*")}`,
-            );
-            await page.type('input[placeholder="Password"]', this.config.password);
-            Logger.debug(`Clicking on: Login Form Submit Button`);
-            await page.click('button[type="submit"]');
-            Logger.debug(`Waiting for navigation to complete`);
-            const normalizeUrl = (url: string) => url.replace(/\/+$/, "");
-
-            // wait until currentUrl changes
-            while (normalizeUrl(page.url()) === normalizeUrl(this.config.platformHomeUrl)) {
-                await new Promise((resolve) => setTimeout(resolve, 1000));
-            }
-            Logger.debug(`Platform Home URL: ${this.config.platformHomeUrl}`);
-            Logger.debug(`Current page URL: ${page.url()}`);
-            // await page.waitForNavigation({
-            //     waitUntil: "networkidle2",
-            // });
-            Logger.info(`User logged in successfully!`);
-            this.currentStage = ExecutionStage.USER_LOGGED_IN;
+            this.currentStage = ExecutionStage.WORKFLOW_RUNNING;
+            this.executionCount++;
+            
+            Logger.info(`Starting workflow execution #${this.executionCount}...`);
+            
+            // TODO: Implement your automation workflow here
+            // Examples:
+            // - Web scraping tasks
+            // - API integrations
+            // - Data processing pipelines
+            // - Scheduled operations
+            // - Resource monitoring
+            
+            Logger.info("Workflow execution completed successfully");
+            this.currentStage = ExecutionStage.WORKFLOW_COMPLETED;
             return true;
         } catch (error: any) {
-            await this.handleError(
-                `Error during user login: ${error.message || error}`,
-                "userLogin",
-            );
+            Logger.error(`Workflow execution failed: ${error.message || error}`);
+            return false;
+        } finally {
+            release();
+        }
+    }
+
+    /**
+     * Health check stage - verify system is operating correctly
+     */
+    async performHealthCheck(): Promise<boolean> {
+        try {
+            Logger.debug("Performing health check...");
+            
+            // TODO: Add your health check logic
+            // Examples:
+            // - Verify external service connections
+            // - Check resource availability
+            // - Validate data integrity
+            // - Monitor performance metrics
+            
+            Logger.debug("Health check passed");
+            return true;
+        } catch (error: any) {
+            Logger.error(`Health check failed: ${error.message || error}`);
             return false;
         }
     }
 
-    async verifyUserLogin(): Promise<boolean> {
+    async run() {
         try {
-            Logger.info(`Verifying user loging`);
-            const page = this.pages?.[0];
-            if (!page) {
-                await this.handleError(
-                    "Page allocation failed while verifying user login",
-                    "verifyUserLogin",
-                );
-                return false;
-            }
-            const homeUrl = this.config.targetPlatformURL + "/secure/home.jsp";
-            Logger.debug(`Redirecting to ${homeUrl} URL to verify user login`);
-            await page.goto(homeUrl, {
-                waitUntil: "networkidle2",
-            });
-            const loginXPath = `xpath=//a[contains(text(), "${this.config.username}.${this.config.studentEmailPostfix}")]`;
-            Logger.debug(`Waiting for login XPath selector: ${loginXPath}`);
-            const loginElements = await page.$$(loginXPath);
-            Logger.debug(`Login elements found: ${loginElements.length}`);
-            if (!loginElements.length) {
-                await this.handleError("Login verification failed!", "verifyUserLogin");
-                return false;
-            }
-            this.currentStage = ExecutionStage.LOGIN_VERIFIED;
-            return true;
+            Logger.info("Starting automation workflow...");
+            
+            // Start the monitoring loop
+            this.startMonitoring();
+            
         } catch (error: any) {
-            await this.handleError(
-                `Error verifying user login: ${error.message || error}`,
-                "verifyUserLogin",
-            );
-            return false;
+            Logger.error(`Error in automation workflow: ${error.message || error}`);
+            this.systemStatus = "failed";
+            this.currentStage = ExecutionStage.FAILED;
         }
     }
 
-    async getTodaysSessions(): Promise<boolean> {
-        try {
-            Logger.info(`Getting today's sessions`);
-            const page = this.pages?.[0];
-            if (!page) {
-                await this.handleError(
-                    "Page allocation failed while getting today's sessions",
-                    "getTodaysSessions",
-                );
-                return false;
-            }
-            const pageUrl = `${this.config.targetPlatformURL}/secure/tla/m.jsp`;
-            Logger.debug(`Redirecting page to url: ${pageUrl}`);
-            await page.goto(pageUrl);
-
-            Logger.debug(`Waiting for selector: #calendar`);
-            await page.waitForSelector("#calendar");
-            const today = dayjs().tz("Asia/Kolkata").format("MMMM D, YYYY");
-            let calendarText = await page.$eval(
-                "#calendar > :first-child > :nth-child(2)",
-                (el) => el.textContent,
-            );
-            calendarText = calendarText.split(" (")[0];
-            Logger.info(
-                `Today's date: ${today} | Webpage Calendar date: ${calendarText}`,
-            );
-            // Get all lecture elements from the calendar
-            await page.waitForSelector(".fc-time-grid-event.fc-event.fc-start.fc-end", {
-                timeout: 60000,
-            });
-            await this.captureScreenshot(page);
-            const lectures = await page.$$eval(
-                ".fc-time-grid-event.fc-event.fc-start.fc-end",
-                (elements) => {
-                    console.log(elements);
-                    return elements.map((el) => {
-                        const titleEl = el.querySelector(".fc-title");
-                        const timeEl = el.querySelector(".fc-time");
-                        return {
-                            title: titleEl ? titleEl.textContent?.trim() || "" : "",
-                            href: el.getAttribute("href") || "",
-                            time: timeEl ? timeEl.getAttribute("data-full") || "" : "",
-                            lectureName: el.textContent?.trim() || "",
-                        };
-                    });
-                },
-            );
-            Logger.info(`Found ${lectures.length} sessions for today`);
-            this.sessions = lectures;
-            this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
-            return true;
-        } catch (error: any) {
-            await this.handleError(
-                `Error getting today's sessions: ${error.message || error}`,
-                "getTodaysSessions",
-            );
-            return false;
-        }
-    }
-
-    async joinSession(sessionLink: string): Promise<boolean> {
-        try {
-            if (!this.pages) {
-                await this.handleError(
-                    "Page allocation failed while joining session",
-                    "joinSession",
-                );
-                return false;
-            }
-            const page = this.pages[0];
-            Logger.debug(`Redirecting page to session link: ${sessionLink}`);
-            await page.goto(sessionLink);
-            // await page.waitForNavigation(); // commenting this out cuz for some reason it's not working as expected
-            Logger.debug(`Waiting for selector: .joinBtn`);
-            const joinButton = await page.$(".joinBtn");
-            if (!joinButton) {
-                await this.handleError("Join button not found!", "joinSession");
-                return false;
-            }
-            Logger.debug(`Clicking on: .joinBtn`);
-            // const relHref = await page.$eval(".joinBtn", el => el.getAttribute("href"));
-            const relHref = await joinButton.evaluate((el) => el.getAttribute("href"));
-            if (!relHref) {
-                await this.handleError("Join link not found!", "joinSession");
-                return false;
-            }
-            const joinLink = `${this.config.targetPlatformURL}${relHref}`;
-            Logger.info(`Join link: ${joinLink}`);
-            await page.goto(joinLink);
-
-            Logger.debug(`Waiting for selector: iframe#frame`);
-            await page.waitForSelector("iframe#frame");
-            Logger.debug(`Accessing session iframe`);
-            const iframe = page
-                .frames()
-                .find((f) => f.name() === "frame" || f.url().includes("frame"));
-            if (!iframe) {
-                await this.handleError("Could not access session iframe!", "joinSession");
-                await this.captureScreenshot(page);
-                return false;
-            }
-
-            Logger.debug(`Waiting for selector: button[aria-label="Listen only"]`);
-            const listenOnlyButton = await iframe.waitForSelector(
-                'button[aria-label="Listen only"]',
-            );
-            if (!listenOnlyButton) {
-                await this.captureScreenshot(page);
-                await this.handleError("Listen only button not found!", "joinClass");
-                return false;
-            }
-            Logger.debug(`Clicking on: button[aria-label="Listen only"]`);
-            await listenOnlyButton.click();
-            Logger.info(`Clicked on: Listen only button`);
-            this.currentStage = ExecutionStage.CLASS_JOINED;
-            await this.captureScreenshot(page);
-            return true;
-        } catch (error: any) {
-            await this.handleError(
-                `Error joining class: ${error.message || error}`,
-                "joinClass",
-            );
-            for (const page of this.pages || []) {
-                await this.captureScreenshot(page);
-            }
-            return false;
-        }
-    }
-
-    async getSessionLinkFromSchedule(schedule: LectureData[]) {
-        try {
-            Logger.info(`Getting active session`);
-            let activeSession = null;
-            for (const lecture of schedule) {
-                Logger.debug(`Checking lecture: ${JSON.stringify(lecture)}`);
-                let [startTime, endTime] = lecture.time.split(" - ");
-                if (!startTime) {
-                    await this.handleError(
-                        `Start time not found for lecture: ${lecture.lectureName}`,
-                        "getClassLinkFromLectures",
-                    );
-                    continue;
-                }
-                if (!endTime) {
-                    // For testing, default startTime
-                    startTime = "07:00";
-                    // Assume startTime is PM and add 2 hours
-                    endTime = dayjs(`${startTime} PM`, "hh:mm A")
-                        .add(2, "hour")
-                        .format("HH:mm");
-                }
-                const [startHour, startMinute] = startTime.split(":");
-                const [endHour, endMinute] = endTime.split(":");
-
-                // Convert to 24-hour format by adding 12 if hour is less than 12 (assumed PM)
-                const startHourNum =
-                    Number(startHour) < 12 ? Number(startHour) + 12 : Number(startHour);
-                const endHourNum =
-                    Number(endHour) < 12 ? Number(endHour) + 12 : Number(endHour);
-
-                const startDate = dayjs()
-                    .tz(tzLocation)
-                    .set("hour", startHourNum)
-                    .set("minute", Number(startMinute));
-                const endDate = dayjs()
-                    .tz(tzLocation)
-                    .set("hour", endHourNum)
-                    .set("minute", Number(endMinute));
-
-                if (dayjs().isBetween(startDate, endDate)) {
-                    activeSession = lecture;
-                    break; // Exit loop once we find an active session
-                }
-            }
-
-            if (!activeSession) {
-                await this.handleError(
-                    `No active session found, next session at ${
-                        schedule[0]?.time || "unknown"
-                    }`,
-                    "getSessionLinkFromSchedule",
-                );
-                // reset stage status to previous stage to trigger retry
-                this.setStageBeforeFailedStage("getSessionLinkFromSchedule");
-                return null;
-            }
-
-            // Mark this function as successful
-            this.stageStatus.getSessionLinkFromSchedule.success = true;
-            this.stageStatus.getSessionLinkFromSchedule.lastSuccessTime = dayjs()
-                .tz(tzLocation)
-                .format("YYYY-MM-DD HH:mm:ss");
-
-            return activeSession.href;
-        } catch (error: any) {
-            await this.handleError(
-                `Error getting session link: ${error.message || error}`,
-                "getSessionLinkFromSchedule",
-            );
-            this.stageStatus.getSessionLinkFromSchedule.success = false;
-            this.stageStatus.getSessionLinkFromSchedule.currentRetries++;
-            return null;
-        }
-    }
-
-    async closeBrowser() {
-        if (this.browser) {
-            await this.browser.close();
-            Logger.info("Browser closed!");
-        }
+    async shutdown() {
+        Logger.info("Shutting down automation system...");
+        this.stopMonitoring();
+        
+        // TODO: Add cleanup logic
+        // Examples:
+        // - Close database connections
+        // - Release resources
+        // - Save state
+        // - Graceful termination of background tasks
+        
+        Logger.info("Shutdown complete");
     }
 
     async apiStatus() {
@@ -1160,105 +461,98 @@ class Automation {
             timestamp: new Date().toISOString(),
             startTime: this.startTime,
             currentStage: this.currentStage,
+            executionCount: this.executionCount,
             stageStatus: this.stageStatus,
-            browser: {
-                version: (await this.browser?.version()) || "N/A",
-                pages: this.pages?.length || 0,
-                open: this.browser?.connected || false,
-            },
-            sessions: this.sessions,
-            activeSessionLink: this.activeSessionLink,
+            message: "Automation service running",
         };
     }
 }
 
-const initiateAutomationSequence = async (automation: Automation) => {
-    try {
-        // Start the monitoring process
-        automation.startMonitoring();
-    } catch (error: any) {
-        Logger.error(`Error initiating automation sequence: ${error}`);
-        automation.currentStage = ExecutionStage.FAILED;
-        automation.systemStatus = "failed";
-    }
-};
-
 app.listen(PORT, async () => {
     Logger.info(`Server running on port ${PORT}`);
-    Logger.debug(`Creating automation instance...`);
+    Logger.debug("Creating automation instance...");
+    
     const automation = new Automation(configInit);
-    Logger.debug(`Automation instance created!`);
+    Logger.debug("Automation instance created!");
 
+    // Start automation workflow
     try {
-        await initiateAutomationSequence(automation);
+        await automation.run();
     } catch (error: any) {
         Logger.error(`Error occurred: ${error}`);
-        automation.currentStage = ExecutionStage.FAILED;
         automation.systemStatus = "failed";
     }
 
-    app.get("/status", (_req: Request, res: Response) => {
+    // Health check endpoint
+    app.get("/status", async (_req: Request, res: Response) => {
         Logger.debug("GET /status");
-        automation.apiStatus().then((status) => {
-            res.json(status);
+        const status = await automation.apiStatus();
+        res.json(status);
+    });
+
+    // Health endpoint for Kubernetes
+    app.get("/health", (_req: Request, res: Response) => {
+        res.json({ status: "ok", timestamp: new Date().toISOString() });
+    });
+
+    // Readiness probe - more detailed health check
+    app.get("/ready", async (_req: Request, res: Response) => {
+        const isReady = automation.systemStatus !== "failed";
+        const statusCode = isReady ? 200 : 503;
+        
+        res.status(statusCode).json({
+            ready: isReady,
+            status: automation.systemStatus,
+            currentStage: automation.currentStage,
+            timestamp: new Date().toISOString(),
         });
     });
 
-    app.get("/screenshot", async (_req: Request, res: Response) => {
-        Logger.debug("GET /screenshot");
-        try {
-            if (!automation.browser || !automation.browser.connected) {
-                res.status(503).json({
-                    error: "Browser not connected",
-                    stage: automation.currentStage,
-                    status: automation.systemStatus,
-                });
-                return;
-            }
+    // Metrics endpoint for Prometheus scraping
+    app.get("/metrics", async (_req: Request, res: Response) => {
+        const uptime = Date.now() - new Date(automation.startTime).getTime();
+        const status = await automation.apiStatus();
+        
+        // Prometheus format metrics
+        const metrics = `
+# HELP automation_uptime_seconds Total uptime in seconds
+# TYPE automation_uptime_seconds gauge
+automation_uptime_seconds ${Math.floor(uptime / 1000)}
 
-            if (!automation.pages || automation.pages.length === 0) {
-                res.status(503).json({
-                    error: "No browser pages available",
-                    stage: automation.currentStage,
-                    status: automation.systemStatus,
-                });
-                return;
-            }
+# HELP automation_execution_count Total number of workflow executions
+# TYPE automation_execution_count counter
+automation_execution_count ${automation.executionCount}
 
-            const screenshot = await automation.captureScreenshot(
-                automation.pages[0],
-                false,
-            );
+# HELP automation_status Current system status (0=failed, 1=degraded, 2=healthy)
+# TYPE automation_status gauge
+automation_status ${automation.systemStatus === "healthy" ? 2 : automation.systemStatus === "degraded" ? 1 : 0}
 
-            if (!screenshot) {
-                res.status(500).json({
-                    error: "Failed to capture screenshot",
-                    stage: automation.currentStage,
-                    status: automation.systemStatus,
-                });
-                return;
-            }
+# HELP automation_stage_success Stage completion status (0=failed, 1=success)
+# TYPE automation_stage_success gauge
+${Object.entries(status.stageStatus)
+    .map(([stage, config]) => `automation_stage_success{stage="${stage}"} ${config.success ? 1 : 0}`)
+    .join("\n")}
 
-            res.setHeader("Content-Type", "image/png");
-            res.setHeader("Content-Disposition", "inline; filename=screenshot.png");
-            res.setHeader("Cache-Control", "no-cache");
-            res.end(screenshot);
-            
-        } catch (error: any) {
-            Logger.error(`Error in /screenshot endpoint: ${error.message || error}`);
-            res.status(500).json({
-                error: "Internal server error",
-                details: error.message || error,
-                stage: automation.currentStage,
-                status: automation.systemStatus,
-            });
-        }
+# HELP automation_stage_retries Current retry count per stage
+# TYPE automation_stage_retries gauge
+${Object.entries(status.stageStatus)
+    .map(([stage, config]) => `automation_stage_retries{stage="${stage}"} ${config.currentRetries}`)
+    .join("\n")}
+`.trim();
+        
+        res.setHeader("Content-Type", "text/plain");
+        res.send(metrics);
     });
 
     process.on("SIGINT", async () => {
-        Logger.info("Received SIGINT signal, closing browser...");
-        automation.stopMonitoring();
-        await automation.closeBrowser();
+        Logger.info("Received SIGINT signal, shutting down gracefully...");
+        await automation.shutdown();
+        process.exit(0);
+    });
+
+    process.on("SIGTERM", async () => {
+        Logger.info("Received SIGTERM signal, shutting down gracefully...");
+        await automation.shutdown();
         process.exit(0);
     });
 });
