@@ -42,9 +42,9 @@ enum ExecutionStage {
 type TConfig = {
     username: string;
     password: string;
-    classHomeUrl: string;
+    platformHomeUrl: string;
     studentEmailPostfix: string;
-    codeTantraURL: string;
+    targetPlatformURL: string;
 };
 
 type LectureData = {
@@ -71,9 +71,9 @@ type StageStatus = {
 const configInit: TConfig = {
     username: process.env.USERNAME as string,
     password: process.env.PASSWORD as string,
-    classHomeUrl: process.env.HOME_URL as string,
+    platformHomeUrl: process.env.HOME_URL as string,
     studentEmailPostfix: process.env.EMAIL_PREFIX as string,
-    codeTantraURL: process.env.CLASS_URL as string,
+    targetPlatformURL: process.env.TARGET_URL as string,
 };
 
 Logger.debug("Config:", {
@@ -86,24 +86,24 @@ class Automation {
     browser: Browser | null;
     pages: Page[] | null;
     startTime: string;
-    lectures!: LectureData[] | null;
+    sessions!: LectureData[] | null;
     currentStage: ExecutionStage;
     stageStatus: StageStatus;
-    activeClassLink: string | null;
+    activeSessionLink: string | null;
     systemStatus: "healthy" | "degraded" | "failed";
     monitoringInterval: NodeJS.Timeout | null;
     private monitoringMutex: Mutex;
     private userDetectionFaultTolerance: number = 1 / 3; // At least 1 out of 3 methods must succeed
 
     constructor(config: TConfig) {
-        Logger.debug("Class Automation constructor called");
+        Logger.debug("Platform Automation constructor called");
         this.config = config;
         this.validateConfig();
         this.browser = null;
         this.pages = null;
         this.startTime = dayjs().tz(tzLocation).format("YYYY-MM-DD HH:mm:ss");
         this.currentStage = ExecutionStage.INITIAL;
-        this.activeClassLink = null;
+        this.activeSessionLink = null;
         this.systemStatus = "healthy";
         this.monitoringInterval = null;
         this.monitoringMutex = new Mutex();
@@ -134,7 +134,7 @@ class Automation {
                 success: false,
                 lastSuccessTime: null,
             },
-            getTodaysClass: {
+            getTodaysSessions: {
                 maxRetries: 3,
                 currentRetries: 0,
                 lastAttempt: null,
@@ -142,7 +142,7 @@ class Automation {
                 success: false,
                 lastSuccessTime: null,
             },
-            getClassLinkFromLectures: {
+            getSessionLinkFromSchedule: {
                 maxRetries: 2,
                 currentRetries: 0,
                 lastAttempt: null,
@@ -150,7 +150,7 @@ class Automation {
                 success: false,
                 lastSuccessTime: null,
             },
-            joinClass: {
+            joinSession: {
                 maxRetries: 4,
                 currentRetries: 0,
                 lastAttempt: null,
@@ -310,32 +310,32 @@ class Automation {
                     break;
 
                 case ExecutionStage.GOT_TODAY_CLASSES:
-                    if (this.lectures && this.lectures.length > 0) {
-                        const classLinkPath = await this.getClassLinkFromLectures(
-                            this.lectures,
+                    if (this.sessions && this.sessions.length > 0) {
+                        const sessionLinkPath = await this.getSessionLinkFromSchedule(
+                            this.sessions,
                         );
-                        if (classLinkPath) {
-                            this.activeClassLink = `${this.config.codeTantraURL}${classLinkPath}`;
-                            await this.attemptStage("joinClass");
+                        if (sessionLinkPath) {
+                            this.activeSessionLink = `${this.config.targetPlatformURL}${sessionLinkPath}`;
+                            await this.attemptStage("joinSession");
                         } else {
-                            // No active class, check again after some time
+                            // No active session, check again after some time
                             Logger.info(
-                                "No active class found, will check again in the next monitoring cycle",
+                                "No active session found, will check again in the next monitoring cycle",
                             );
                         }
                     }
                     break;
 
                 case ExecutionStage.CLASS_JOINED:
-                    // Check if class is still in session
-                    if (this.lectures && this.lectures.length > 0) {
-                        const isStillActive = await this.checkIfClassIsStillActive();
+                    // Check if session is still active
+                    if (this.sessions && this.sessions.length > 0) {
+                        const isStillActive = await this.checkIfSessionIsStillActive();
                         if (!isStillActive) {
-                            Logger.info("Current class session has ended");
+                            Logger.info("Current session has ended");
                             this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
-                            this.stageStatus.joinClass.success = false;
+                            this.stageStatus.joinSession.success = false;
                         }
-                        Logger.info("Class is still active");
+                        Logger.info("Session is still active");
                     }
                     break;
 
@@ -380,11 +380,11 @@ class Automation {
             case "verifyUserLogin":
                 this.currentStage = ExecutionStage.USER_LOGGED_IN;
                 break;
-            case "getTodaysClass":
+            case "getTodaysSessions":
                 this.currentStage = ExecutionStage.LOGIN_VERIFIED;
                 break;
-            case "getClassLinkFromLectures":
-            case "joinClass":
+            case "getSessionLinkFromSchedule":
+            case "joinSession":
                 this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
                 break;
             default:
@@ -397,9 +397,9 @@ class Automation {
             "launchBrowser",
             "userLogin",
             "verifyUserLogin",
-            "getTodaysClass",
-            "getClassLinkFromLectures",
-            "joinClass",
+            "getTodaysSessions",
+            "getSessionLinkFromSchedule",
+            "joinSession",
         ];
 
         for (const stage of stages) {
@@ -441,10 +441,10 @@ class Automation {
         }
     }
 
-    async checkIfClassIsStillActive(): Promise<boolean> {
-        Logger.debug(`Starting class activity check`);
-        if (!this.lectures || this.lectures.length === 0) {
-            Logger.debug(`No lectures found, class cannot be active`);
+    async checkIfSessionIsStillActive(): Promise<boolean> {
+        Logger.debug(`Starting session activity check`);
+        if (!this.sessions || this.sessions.length === 0) {
+            Logger.debug(`No sessions found, session cannot be active`);
             return false;
         }
 
@@ -452,8 +452,8 @@ class Automation {
             const page = this.pages?.[0];
             if (!page) {
                 await this.handleError(
-                    "Page allocation failed while checking if class is still active",
-                    "checkIfClassIsStillActive",
+                    "Page allocation failed while checking if session is still active",
+                    "checkIfSessionIsStillActive",
                 );
                 return false;
             }
@@ -516,9 +516,9 @@ class Automation {
 
                 if (!usersButton) {
                     Logger.debug(
-                        "Unable to find users button, but assuming user is still in class",
+                        "Unable to find users button, but assuming user is still in session",
                     );
-                    return true; // User is likely still in class if we can access the iframe
+                    return true; // User is likely still in session if we can access the iframe
                 }
 
                 Logger.debug(`Clicking on users button`);
@@ -532,7 +532,7 @@ class Automation {
                 if (!grid) {
                     await this.captureScreenshot(page);
                     Logger.debug(
-                        "Grid not found, but continuing as user may still be in class",
+                        "Grid not found, but continuing as user may still be in session",
                     );
                     return true;
                 }
@@ -655,26 +655,26 @@ class Automation {
                     const isUserPresent = successRate >= this.userDetectionFaultTolerance;
                     Logger.info(
                         isUserPresent
-                            ? `User detected in class with sufficient confidence`
-                            : `User may not be in class anymore, detection confidence: ${successRate}`,
+                            ? `User detected in session with sufficient confidence`
+                            : `User may not be in session anymore, detection confidence: ${successRate}`,
                     );
                     return isUserPresent;
                 }
 
                 Logger.info(
-                    `No detection methods succeeded, something went wrong, assuming user has left class`,
+                    `No detection methods succeeded, something went wrong, assuming user has left session`,
                 );
                 return false;
             } catch (error) {
-                // If we fail here but we already accessed the iframe, assume user is still in class
+                // If we fail here but we already accessed the iframe, assume user is still in session
                 Logger.error(`Error in user panel operations: ${error}`);
-                Logger.debug(`We could access iframe, so assuming user is still in class despite error`);
+                Logger.debug(`We could access iframe, so assuming user is still in session despite error`);
                 return true;
             }
         } catch (error: any) {
-            Logger.error(`Error checking if class is still active: ${error}`);
-            Logger.debug(`Major error in class activity check, returning false to be safe`);
-            // If we can't verify, assume the class is not active as a safer default
+            Logger.error(`Error checking if session is still active: ${error}`);
+            Logger.debug(`Major error in session activity check, returning false to be safe`);
+            // If we can't verify, assume the session is not active as a safer default
             return false;
         }
     }
@@ -708,14 +708,14 @@ class Automation {
                 case "verifyUserLogin":
                     result = await this.verifyUserLogin();
                     break;
-                case "getTodaysClass":
-                    result = await this.getTodaysClass();
+                case "getTodaysSessions":
+                    result = await this.getTodaysSessions();
                     break;
-                case "joinClass":
-                    if (this.activeClassLink) {
-                        result = await this.joinClass(this.activeClassLink);
+                case "joinSession":
+                    if (this.activeSessionLink) {
+                        result = await this.joinSession(this.activeSessionLink);
                     } else {
-                        Logger.error("No active class link available");
+                        Logger.error("No active session link available");
                         result = false;
                     }
                     break;
@@ -870,8 +870,8 @@ class Automation {
                 );
                 return false;
             }
-            Logger.debug(`Redirecting page to url: ${this.config.classHomeUrl}`);
-            await page.goto(this.config.classHomeUrl);
+            Logger.debug(`Redirecting page to url: ${this.config.platformHomeUrl}`);
+            await page.goto(this.config.platformHomeUrl);
             Logger.debug(`Waiting for selector: Login Form Submit Button`);
             await page.waitForSelector('button[type="submit"]');
             Logger.debug(`Filling in username: ${this.config.username}`);
@@ -886,10 +886,10 @@ class Automation {
             const normalizeUrl = (url: string) => url.replace(/\/+$/, "");
 
             // wait until currentUrl changes
-            while (normalizeUrl(page.url()) === normalizeUrl(this.config.classHomeUrl)) {
+            while (normalizeUrl(page.url()) === normalizeUrl(this.config.platformHomeUrl)) {
                 await new Promise((resolve) => setTimeout(resolve, 1000));
             }
-            Logger.debug(`Class Home URL: ${this.config.classHomeUrl}`);
+            Logger.debug(`Platform Home URL: ${this.config.platformHomeUrl}`);
             Logger.debug(`Current page URL: ${page.url()}`);
             // await page.waitForNavigation({
             //     waitUntil: "networkidle2",
@@ -917,7 +917,7 @@ class Automation {
                 );
                 return false;
             }
-            const homeUrl = this.config.codeTantraURL + "/secure/home.jsp";
+            const homeUrl = this.config.targetPlatformURL + "/secure/home.jsp";
             Logger.debug(`Redirecting to ${homeUrl} URL to verify user login`);
             await page.goto(homeUrl, {
                 waitUntil: "networkidle2",
@@ -941,18 +941,18 @@ class Automation {
         }
     }
 
-    async getTodaysClass(): Promise<boolean> {
+    async getTodaysSessions(): Promise<boolean> {
         try {
-            Logger.info(`Getting today's class`);
+            Logger.info(`Getting today's sessions`);
             const page = this.pages?.[0];
             if (!page) {
                 await this.handleError(
-                    "Page allocation failed while getting today's class",
-                    "getTodaysClass",
+                    "Page allocation failed while getting today's sessions",
+                    "getTodaysSessions",
                 );
                 return false;
             }
-            const pageUrl = `${this.config.codeTantraURL}/secure/tla/m.jsp`;
+            const pageUrl = `${this.config.targetPlatformURL}/secure/tla/m.jsp`;
             Logger.debug(`Redirecting page to url: ${pageUrl}`);
             await page.goto(pageUrl);
 
@@ -988,57 +988,57 @@ class Automation {
                     });
                 },
             );
-            Logger.info(`Found ${lectures.length} lectures for today`);
-            this.lectures = lectures;
+            Logger.info(`Found ${lectures.length} sessions for today`);
+            this.sessions = lectures;
             this.currentStage = ExecutionStage.GOT_TODAY_CLASSES;
             return true;
         } catch (error: any) {
             await this.handleError(
-                `Error getting today's class: ${error.message || error}`,
-                "getTodaysClass",
+                `Error getting today's sessions: ${error.message || error}`,
+                "getTodaysSessions",
             );
             return false;
         }
     }
 
-    async joinClass(classLink: string): Promise<boolean> {
+    async joinSession(sessionLink: string): Promise<boolean> {
         try {
             if (!this.pages) {
                 await this.handleError(
-                    "Page allocation failed while joining class",
-                    "joinClass",
+                    "Page allocation failed while joining session",
+                    "joinSession",
                 );
                 return false;
             }
             const page = this.pages[0];
-            Logger.debug(`Redirecting page to class link: ${classLink}`);
-            await page.goto(classLink);
+            Logger.debug(`Redirecting page to session link: ${sessionLink}`);
+            await page.goto(sessionLink);
             // await page.waitForNavigation(); // commenting this out cuz for some reason it's not working as expected
             Logger.debug(`Waiting for selector: .joinBtn`);
             const joinButton = await page.$(".joinBtn");
             if (!joinButton) {
-                await this.handleError("Join button not found!", "joinClass");
+                await this.handleError("Join button not found!", "joinSession");
                 return false;
             }
             Logger.debug(`Clicking on: .joinBtn`);
             // const relHref = await page.$eval(".joinBtn", el => el.getAttribute("href"));
             const relHref = await joinButton.evaluate((el) => el.getAttribute("href"));
             if (!relHref) {
-                await this.handleError("Join link not found!", "joinClass");
+                await this.handleError("Join link not found!", "joinSession");
                 return false;
             }
-            const joinLink = `${this.config.codeTantraURL}${relHref}`;
+            const joinLink = `${this.config.targetPlatformURL}${relHref}`;
             Logger.info(`Join link: ${joinLink}`);
             await page.goto(joinLink);
 
             Logger.debug(`Waiting for selector: iframe#frame`);
             await page.waitForSelector("iframe#frame");
-            Logger.debug(`Accessing class iframe`);
+            Logger.debug(`Accessing session iframe`);
             const iframe = page
                 .frames()
                 .find((f) => f.name() === "frame" || f.url().includes("frame"));
             if (!iframe) {
-                await this.handleError("Could not access class iframe!", "joinClass");
+                await this.handleError("Could not access session iframe!", "joinSession");
                 await this.captureScreenshot(page);
                 return false;
             }
@@ -1070,11 +1070,11 @@ class Automation {
         }
     }
 
-    async getClassLinkFromLectures(lectures: LectureData[]) {
+    async getSessionLinkFromSchedule(schedule: LectureData[]) {
         try {
-            Logger.info(`Getting active lecture`);
-            let activeLecture = null;
-            for (const lecture of lectures) {
+            Logger.info(`Getting active session`);
+            let activeSession = null;
+            for (const lecture of schedule) {
                 Logger.debug(`Checking lecture: ${JSON.stringify(lecture)}`);
                 let [startTime, endTime] = lecture.time.split(" - ");
                 if (!startTime) {
@@ -1111,37 +1111,37 @@ class Automation {
                     .set("minute", Number(endMinute));
 
                 if (dayjs().isBetween(startDate, endDate)) {
-                    activeLecture = lecture;
-                    break; // Exit loop once we find an active lecture
+                    activeSession = lecture;
+                    break; // Exit loop once we find an active session
                 }
             }
 
-            if (!activeLecture) {
+            if (!activeSession) {
                 await this.handleError(
-                    `No active lecture found, next class at ${
-                        lectures[0]?.time || "unknown"
+                    `No active session found, next session at ${
+                        schedule[0]?.time || "unknown"
                     }`,
-                    "getClassLinkFromLectures",
+                    "getSessionLinkFromSchedule",
                 );
                 // reset stage status to previous stage to trigger retry
-                this.setStageBeforeFailedStage("getClassLinkFromLectures");
+                this.setStageBeforeFailedStage("getSessionLinkFromSchedule");
                 return null;
             }
 
             // Mark this function as successful
-            this.stageStatus.getClassLinkFromLectures.success = true;
-            this.stageStatus.getClassLinkFromLectures.lastSuccessTime = dayjs()
+            this.stageStatus.getSessionLinkFromSchedule.success = true;
+            this.stageStatus.getSessionLinkFromSchedule.lastSuccessTime = dayjs()
                 .tz(tzLocation)
                 .format("YYYY-MM-DD HH:mm:ss");
 
-            return activeLecture.href;
+            return activeSession.href;
         } catch (error: any) {
             await this.handleError(
-                `Error getting class link: ${error.message || error}`,
-                "getClassLinkFromLectures",
+                `Error getting session link: ${error.message || error}`,
+                "getSessionLinkFromSchedule",
             );
-            this.stageStatus.getClassLinkFromLectures.success = false;
-            this.stageStatus.getClassLinkFromLectures.currentRetries++;
+            this.stageStatus.getSessionLinkFromSchedule.success = false;
+            this.stageStatus.getSessionLinkFromSchedule.currentRetries++;
             return null;
         }
     }
@@ -1166,8 +1166,8 @@ class Automation {
                 pages: this.pages?.length || 0,
                 open: this.browser?.connected || false,
             },
-            lectures: this.lectures,
-            activeClassLink: this.activeClassLink,
+            sessions: this.sessions,
+            activeSessionLink: this.activeSessionLink,
         };
     }
 }

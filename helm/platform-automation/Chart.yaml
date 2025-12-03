@@ -1,5 +1,5 @@
 apiVersion: v2
-name: class-automation
-description: Helm chart for class attendance automation
+name: platform-automation
+description: Helm chart for automated platform interaction
 version: 0.1.0
 appVersion: "1.0.0"

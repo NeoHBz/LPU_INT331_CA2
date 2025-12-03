@@ -24,8 +24,8 @@ spec:
           value: "{{ .Values.userConfig.homeUrl }}"
         - name: EMAIL_PREFIX
           value: "{{ .Values.userConfig.emailPrefix }}"
-        - name: CLASS_URL
-          value: "{{ .Values.userConfig.classUrl }}"
+        - name: TARGET_URL
+          value: "{{ .Values.userConfig.targetUrl }}"
         - name: LOG_LEVEL
           value: "{{ .Values.userConfig.logLevel }}"
         - name: HEADLESS

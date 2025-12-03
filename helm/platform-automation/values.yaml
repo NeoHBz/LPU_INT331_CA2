@@ -1,6 +1,6 @@
 replicaCount: 1
 image:
-  repository: online-class-automation
+  repository: online-platform-automation
   pullPolicy: IfNotPresent
   tag: "dev"
 
@@ -9,7 +9,7 @@ userConfig:
   password: ""
   homeUrl: ""
   emailPrefix: ""
-  classUrl: ""
+  targetUrl: ""
   logLevel: "info"
   headless: 1
 

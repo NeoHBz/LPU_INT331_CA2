@@ -1,6 +1,6 @@
 # Online Platform Automation
 
-Automated platform system using Puppeteer, TypeScript, and Kubernetes deployment via Helm.
+Automated web platform interaction system using Puppeteer, TypeScript, and Kubernetes deployment via Helm.
 
 ## Table of Contents
 
@@ -108,7 +108,7 @@ userConfig:
   password: ""
   homeUrl: ""
   emailPrefix: ""
-  classUrl: ""
+  targetUrl: ""
   logLevel: "info"
   headless: 1
 
@@ -133,7 +133,7 @@ userConfig:
   password: "secure_password"
   homeUrl: "https://platform.example.com"
   emailPrefix: "john.doe"
-  classUrl: "https://platform.example.com/class/12345"
+  targetUrl: "https://platform.example.com/meetings/12345"
   logLevel: "debug"
   headless: 1
 ```
@@ -144,7 +144,7 @@ userConfig:
 - `password`: Platform login password
 - `homeUrl`: Base URL of the platform
 - `emailPrefix`: Email prefix for notifications
-- `classUrl`: Direct URL to the class/meeting
+- `targetUrl`: Direct URL to the target resource/session
 - `logLevel`: Logging level (`debug`, `info`, `warn`, `error`)
 - `headless`: Run browser in headless mode (1 = headless, 0 = visible)
 
@@ -442,7 +442,7 @@ The application uses these environment variables (configured via Helm):
 - `PASSWORD`: Platform password
 - `HOME_URL`: Platform home URL
 - `EMAIL_PREFIX`: Email prefix for notifications
-- `CLASS_URL`: Class/meeting URL
+- `TARGET_URL`: Target resource/session URL
 - `LOG_LEVEL`: Logging verbosity (`debug`, `info`, `warn`, `error`)
 - `HEADLESS`: Browser headless mode (1 or 0)
 
