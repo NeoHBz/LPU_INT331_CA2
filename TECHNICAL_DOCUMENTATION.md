@@ -20,27 +20,29 @@
 
 ### System Components
 
-```
-┌─────────────────────────────────────────────┐
-│         Kubernetes Cluster                  │
-│  ┌───────────────────────────────────────┐  │
-│  │  Helm Chart: platform-automation      │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  Pod: user1                     │  │  │
-│  │  │  ┌──────────────────────────┐   │  │  │
-│  │  │  │  Container: automation   │   │  │  │
-│  │  │  │  - Express Server        │   │  │  │
-│  │  │  │  - Health Endpoints      │   │  │  │
-│  │  │  │  - Config from ENV       │   │  │  │
-│  │  │  └──────────────────────────┘   │  │  │
-│  │  └─────────────────────────────────┘  │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  Pod: user2                     │  │  │
-│  │  │  └─────────────────────────────┘  │  │
-│  │  │  ...                              │  │
-│  │  └───────────────────────────────────┘  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Kubernetes Cluster
+        subgraph Helm["Helm Chart: platform-automation"]
+            subgraph Pod1["Pod: user1"]
+                Container1["Container: automation<br/>- Express Server<br/>- Health Endpoints<br/>- Config from ENV"]
+            end
+            subgraph Pod2["Pod: user2"]
+                Container2["Container: automation<br/>- Express Server<br/>- Health Endpoints<br/>- Config from ENV"]
+            end
+            Pod3["Pod: user3<br/>..."]
+        end
+    end
+    
+    Prometheus[Prometheus] -->|scrapes /metrics| Container1
+    Prometheus -->|scrapes /metrics| Container2
+    LoadBalancer[Load Balancer] -->|/status /health| Container1
+    LoadBalancer -->|/status /health| Container2
+    
+    style Container1 fill:#e1f5ff
+    style Container2 fill:#e1f5ff
+    style Prometheus fill:#ff9999
+    style LoadBalancer fill:#99ff99
 ```
 
 ## Project Structure
@@ -124,6 +126,38 @@ Key environment variables:
 - `PORT`: Server port (default: 3000)
 
 ## Container Build Process
+
+### Multi-Stage Build Flow
+
+```mermaid
+flowchart TD
+    subgraph "Stage 1: Builder (node:18-bullseye)"
+        S1[Start with Node.js 18] --> Install1[Install Chromium<br/>+ Dependencies]
+        Install1 --> CopyPkg[Copy package*.json]
+        CopyPkg --> NPMInstall[npm ci --only=production]
+        NPMInstall --> CopySource[Copy source code]
+        CopySource --> TSBuild[npm run build<br/>TypeScript → JavaScript]
+        TSBuild --> Obfuscate[Obfuscate dist/<br/>javascript-obfuscator]
+    end
+    
+    subgraph "Stage 2: Runtime (zenika/alpine-chrome)"
+        S2[Start with Alpine + Chrome] --> CreateWorkdir[WORKDIR /app]
+        CreateWorkdir --> CopyDist[COPY dist from builder]
+        CopyDist --> CopyModules[COPY node_modules from builder]
+        CopyModules --> SetEnv[Set ENV variables<br/>NODE_ENV=production]
+        SetEnv --> EntryPoint[CMD node dist/index.js]
+    end
+    
+    Obfuscate -.->|Artifact Transfer| CopyDist
+    NPMInstall -.->|Artifact Transfer| CopyModules
+    
+    EntryPoint --> FinalImage[Final Image<br/>~200-300MB]
+    
+    style S1 fill:#87CEEB
+    style S2 fill:#90EE90
+    style FinalImage fill:#FFD700
+    style Obfuscate fill:#FFB6C6
+```
 
 ### Multi-Stage Dockerfile
 
@@ -274,10 +308,96 @@ startMonitoring() {
 }
 ```
 
+**Monitoring Execution Sequence:**
+
+```mermaid
+sequenceDiagram
+    participant Timer as Interval Timer
+    participant Monitor as monitorExecution()
+    participant Mutex as monitoringMutex
+    participant Stage as Stage Handler
+    participant System as System Status
+    
+    Timer->>Monitor: Trigger (every 30s)
+    Monitor->>Mutex: Check if locked
+    
+    alt Mutex is locked
+        Mutex-->>Monitor: Skip (previous cycle running)
+        Monitor-->>Timer: Return early
+    else Mutex is free
+        Monitor->>Mutex: Acquire lock
+        Mutex-->>Monitor: Lock acquired
+        
+        Monitor->>System: Get currentStage
+        System-->>Monitor: Return stage
+        
+        alt Stage = INITIAL
+            Monitor->>Stage: attemptStage("initialization")
+            Stage-->>Monitor: Success/Failure
+        else Stage = INITIALIZED
+            Monitor->>Stage: attemptStage("workflowExecution")
+            Stage-->>Monitor: Success/Failure
+        else Stage = WORKFLOW_RUNNING
+            Monitor->>Stage: attemptStage("healthCheck")
+            Stage-->>Monitor: Success/Failure
+        else Stage = FAILED
+            Monitor->>Stage: findFailedStage()
+            Stage->>Monitor: Attempt recovery
+        end
+        
+        Monitor->>System: updateSystemStatus()
+        System-->>Monitor: Status updated
+        
+        Monitor->>Mutex: Release lock
+        Mutex-->>Monitor: Lock released
+        Monitor-->>Timer: Cycle complete
+    end
+```
+
 ### Stage-Based Execution
 
 Monitoring loop handles different stages:
 
+```mermaid
+stateDiagram-v2
+    [*] --> INITIAL
+    
+    INITIAL --> INITIALIZED: Initialization Success
+    INITIAL --> FAILED: Initialization Failed<br/>(max retries)
+    
+    INITIALIZED --> WORKFLOW_RUNNING: Start Workflow
+    INITIALIZED --> FAILED: Workflow Start Failed
+    
+    WORKFLOW_RUNNING --> WORKFLOW_COMPLETED: Execution Success
+    WORKFLOW_RUNNING --> WORKFLOW_RUNNING: Health Check Pass
+    WORKFLOW_RUNNING --> FAILED: Workflow Failed
+    
+    WORKFLOW_COMPLETED --> INITIALIZED: Restart Workflow
+    WORKFLOW_COMPLETED --> [*]: Shutdown
+    
+    FAILED --> INITIAL: Recovery Attempt<br/>(retries available)
+    FAILED --> FAILED: Max Retries Exceeded
+    FAILED --> [*]: Manual Intervention
+    
+    note right of INITIAL
+        Stage: initialization
+        Max Retries: 3
+    end note
+    
+    note right of WORKFLOW_RUNNING
+        Stage: workflowExecution
+        Max Retries: 5
+        Protected by workflowMutex
+    end note
+    
+    note right of FAILED
+        systemStatus = "failed"
+        Attempts recovery if
+        retries < maxRetries
+    end note
+```
+
+**Stage Transitions:**
 1. **INITIAL** → Attempt initialization
 2. **INITIALIZED** → Execute workflow
 3. **WORKFLOW_RUNNING** → Perform health checks
@@ -457,6 +577,69 @@ Custom logger in `utils/logger.ts`:
 
 ## Multi-User Deployment
 
+### Multi-User Architecture
+
+```mermaid
+graph TD
+    subgraph Configuration Layer
+        UC1[user-configs/user1.yaml]
+        UC2[user-configs/user2.yaml]
+        UC3[user-configs/user3.yaml]
+    end
+    
+    subgraph Helm Releases
+        H1[Helm Release: user1]
+        H2[Helm Release: user2]
+        H3[Helm Release: user3]
+    end
+    
+    subgraph Kubernetes Resources
+        subgraph Namespace 1
+            D1[Deployment: user1]
+            P1[Pod: user1]
+            S1[Service: user1]
+        end
+        
+        subgraph Namespace 2
+            D2[Deployment: user2]
+            P2[Pod: user2]
+            S2[Service: user2]
+        end
+        
+        subgraph Namespace 3
+            D3[Deployment: user3]
+            P3[Pod: user3]
+            S3[Service: user3]
+        end
+    end
+    
+    UC1 -->|helm install| H1
+    UC2 -->|helm install| H2
+    UC3 -->|helm install| H3
+    
+    H1 --> D1 --> P1
+    H2 --> D2 --> P2
+    H3 --> D3 --> P3
+    
+    P1 --> S1
+    P2 --> S2
+    P3 --> S3
+    
+    subgraph Resource Isolation
+        R1[CPU: 100m-500m<br/>Memory: 256Mi-512Mi]
+        R2[CPU: 100m-500m<br/>Memory: 256Mi-512Mi]
+        R3[CPU: 100m-500m<br/>Memory: 256Mi-512Mi]
+    end
+    
+    P1 -.->|limits| R1
+    P2 -.->|limits| R2
+    P3 -.->|limits| R3
+    
+    style P1 fill:#e1f5ff
+    style P2 fill:#ffe1f5
+    style P3 fill:#f5ffe1
+```
+
 ### Configuration Pattern
 
 Each user gets:
@@ -577,6 +760,42 @@ helm uninstall user1
 
 ## Monitoring and Observability
 
+### Health Check Architecture
+
+```mermaid
+sequenceDiagram
+    participant K8s as Kubernetes
+    participant Liveness as /health endpoint
+    participant Readiness as /ready endpoint
+    participant Status as /status endpoint
+    participant App as Automation App
+    
+    Note over K8s,App: Liveness Probe (every 10s)
+    K8s->>Liveness: GET /health
+    Liveness-->>K8s: 200 {status: "ok"}
+    Note over K8s: Pod is alive, continue
+    
+    Note over K8s,App: Readiness Probe (every 5s)
+    K8s->>Readiness: GET /ready
+    Readiness->>App: Check systemStatus
+    
+    alt systemStatus != "failed"
+        App-->>Readiness: systemStatus: "healthy"/"degraded"
+        Readiness-->>K8s: 200 {ready: true}
+        Note over K8s: Pod ready for traffic
+    else systemStatus == "failed"
+        App-->>Readiness: systemStatus: "failed"
+        Readiness-->>K8s: 503 {ready: false}
+        Note over K8s: Remove from load balancer
+    end
+    
+    Note over K8s,App: External Monitoring
+    K8s->>Status: GET /status (manual)
+    Status->>App: Get full status
+    App-->>Status: Detailed state + stages
+    Status-->>K8s: 200 {detailed status}
+```
+
 ### Health Checks
 
 **Liveness Probe**: Ensures pod is alive
@@ -604,6 +823,49 @@ readinessProbe:
 ```
 
 ### Prometheus Integration
+
+**Monitoring Architecture:**
+
+```mermaid
+graph LR
+    subgraph Kubernetes Cluster
+        subgraph Pods
+            App1[Pod: user1<br/>/metrics endpoint]
+            App2[Pod: user2<br/>/metrics endpoint]
+            App3[Pod: user3<br/>/metrics endpoint]
+        end
+        
+        subgraph Monitoring Stack
+            Prom[Prometheus Server]
+            SM[ServiceMonitor]
+            Alert[AlertManager]
+        end
+        
+        subgraph Visualization
+            Grafana[Grafana Dashboards]
+        end
+    end
+    
+    SM -->|discovers| App1
+    SM -->|discovers| App2
+    SM -->|discovers| App3
+    
+    Prom -->|scrapes every 30s| App1
+    Prom -->|scrapes every 30s| App2
+    Prom -->|scrapes every 30s| App3
+    
+    Prom -->|evaluates rules| Alert
+    Prom -->|queries| Grafana
+    
+    Alert -->|sends notifications| Slack[Slack/Email/PagerDuty]
+    
+    style Prom fill:#ff9999
+    style Grafana fill:#ffa500
+    style Alert fill:#ff6b6b
+    style App1 fill:#e1f5ff
+    style App2 fill:#e1f5ff
+    style App3 fill:#e1f5ff
+```
 
 **ServiceMonitor Configuration:**
 ```yaml
@@ -908,6 +1170,47 @@ app.get("/custom-endpoint", async (req, res) => {
 ```
 
 ## CI/CD Integration
+
+### CI/CD Pipeline Architecture
+
+```mermaid
+flowchart LR
+    subgraph Source Control
+        Git[Git Repository<br/>GitHub/GitLab]
+    end
+    
+    subgraph CI Pipeline
+        Trigger[Git Push/PR] --> Lint[Lint Code<br/>ESLint/TSLint]
+        Lint --> Test[Run Tests<br/>Jest/Mocha]
+        Test --> Build[Build Docker Image<br/>Multi-stage build]
+        Build --> Scan[Security Scan<br/>Trivy/Snyk]
+        Scan --> Push[Push to Registry<br/>Docker Hub/ECR]
+    end
+    
+    subgraph CD Pipeline
+        Push --> Validate[Validate Helm Chart<br/>helm lint]
+        Validate --> DryRun[Dry Run Deploy<br/>--dry-run --debug]
+        DryRun --> DeployStaging[Deploy to Staging<br/>helm upgrade]
+        DeployStaging --> HealthCheck[Health Check<br/>/ready endpoint]
+        HealthCheck --> DeployProd{Manual<br/>Approval?}
+        DeployProd -->|Approved| DeployProduction[Deploy to Production<br/>Blue-Green]
+    end
+    
+    subgraph Monitoring
+        DeployProduction --> Monitor[Monitor Metrics<br/>Prometheus]
+        Monitor --> Alert{Issues<br/>Detected?}
+        Alert -->|Yes| Rollback[Automatic Rollback<br/>helm rollback]
+        Alert -->|No| Success[Deployment Success]
+    end
+    
+    Git -.->|webhook| Trigger
+    
+    style Build fill:#90EE90
+    style Push fill:#87CEEB
+    style DeployProduction fill:#FFD700
+    style Rollback fill:#FFB6C6
+    style Success fill:#98FB98
+```
 
 ### Example GitLab CI
 

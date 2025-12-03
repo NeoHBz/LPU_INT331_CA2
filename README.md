@@ -4,6 +4,41 @@ Kubernetes-based automation framework using TypeScript, Express, and Docker. Dep
 
 > **Note:** This is a framework/template. Implement your automation logic in the `Automation.run()` method in `source/src/index.ts`.
 
+## Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "Your Implementation"
+        Code["Implement 3 Methods:<br/>1. initialize()<br/>2. executeWorkflow()<br/>3. performHealthCheck()"]
+    end
+    
+    subgraph "Framework Infrastructure"
+        Monitor[Monitoring Loop<br/>30s interval]
+        Mutex[Concurrency Control<br/>async-mutex]
+        Retry[Retry Logic<br/>3-5 attempts]
+        Metrics[Prometheus Metrics<br/>/metrics endpoint]
+    end
+    
+    subgraph "Kubernetes Deployment"
+        Helm[Helm Chart]
+        Pod[Pod with Container]
+        Health[Health Checks<br/>/health /ready]
+    end
+    
+    Code --> Monitor
+    Monitor --> Mutex
+    Monitor --> Retry
+    Metrics --> Health
+    
+    Helm --> Pod
+    Pod --> Code
+    Pod --> Health
+    
+    style Code fill:#FFD700
+    style Monitor fill:#87CEEB
+    style Pod fill:#90EE90
+```
+
 ## Features
 
 - 🚀 **Kubernetes-Native**: Deploy with Helm charts
@@ -28,6 +63,29 @@ Kubernetes-based automation framework using TypeScript, Express, and Docker. Dep
 - **kubectl**: Configured for your cluster
 
 ## Quick Start
+
+### Deployment Workflow
+
+```mermaid
+flowchart LR
+    A[1. Clone Repo] --> B[2. Build Docker Image]
+    B --> C[3. Configure User YAML]
+    C --> D[4. Deploy with Helm]
+    D --> E[5. Verify Deployment]
+    
+    E --> F{All Checks Pass?}
+    F -->|Yes| G[✓ Deployment Success]
+    F -->|No| H[Check Logs & Debug]
+    H --> C
+    
+    style A fill:#e1f5ff
+    style B fill:#ffe1f5
+    style C fill:#f5ffe1
+    style D fill:#fff5e1
+    style E fill:#f5e1ff
+    style G fill:#90EE90
+    style H fill:#FFB6C6
+```
 
 ### 1. Clone and Setup
 
@@ -269,6 +327,28 @@ async performHealthCheck(): Promise<boolean> {
 - **Retry Logic**: Configurable retries per stage (3-5 attempts)
 - **State Tracking**: ExecutionStage enum tracks workflow progress
 - **Self-Healing**: Automatic recovery from degraded states
+
+### Execution Stage Flow
+
+```mermaid
+stateDiagram-v2
+    [*] --> INITIAL: Application Start
+    INITIAL --> INITIALIZED: initialize() succeeds
+    INITIALIZED --> WORKFLOW_RUNNING: executeWorkflow() starts
+    WORKFLOW_RUNNING --> WORKFLOW_COMPLETED: Execution complete
+    WORKFLOW_COMPLETED --> [*]: Shutdown
+    
+    INITIAL --> FAILED: Init fails (3 retries)
+    INITIALIZED --> FAILED: Workflow fails (5 retries)
+    WORKFLOW_RUNNING --> FAILED: Execution error
+    
+    FAILED --> INITIAL: Retry with recovery
+    
+    note right of WORKFLOW_RUNNING
+        performHealthCheck()
+        runs periodically
+    end note
+```
 
 ### Adding Dependencies
 
