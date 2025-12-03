@@ -1,0 +1,44 @@
+.DS_Store
+# User configurations (contain sensitive credentials)
+# Uncomment the line below to exclude user configs from git
+# user-configs/*.yaml
+# !user-configs/user1.yaml  # Keep example file
+
+# Kubernetes secrets (if generated locally)
+*.secret.yaml
+
+# Helm temporary files
+*.tgz
+helm/*/charts/
+
+# Local development
+.env
+.env.local
+screenshots/
+dist/
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Additional build artifacts
+dist-ssr
+
+# Local overrides
+*.local
+
+# Editor settings
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

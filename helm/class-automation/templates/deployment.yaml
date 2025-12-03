@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+      - name: automation
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        env:
+        - name: USERNAME
+          value: "{{ .Values.userConfig.username }}"
+        - name: PASSWORD
+          value: "{{ .Values.userConfig.password }}"
+        - name: HOME_URL
+          value: "{{ .Values.userConfig.homeUrl }}"
+        - name: EMAIL_PREFIX
+          value: "{{ .Values.userConfig.emailPrefix }}"
+        - name: CLASS_URL
+          value: "{{ .Values.userConfig.classUrl }}"
+        - name: LOG_LEVEL
+          value: "{{ .Values.userConfig.logLevel }}"
+        - name: HEADLESS
+          value: "{{ .Values.userConfig.headless }}"
+        resources:
+          limits:
+            cpu: {{ .Values.resources.limits.cpu }}
+            memory: {{ .Values.resources.limits.memory }}
+          requests:
+            cpu: {{ .Values.resources.requests.cpu }}
+            memory: {{ .Values.resources.requests.memory }}

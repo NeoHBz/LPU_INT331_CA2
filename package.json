@@ -1,0 +1,9 @@
+{
+    "scripts": {
+        "helm:user1": "helm install user1 helm/class-automation -f user-configs/user1.yaml",
+        "helm:uninstall": "helm uninstall admin",
+        "docker:build": "docker build -t online-class-automation:dev source",
+        "docker:imgrm": "npm run helm:uninstall | true && docker image rm online-class-automation:dev",
+        "auto": "npm run docker:imgrm | true && npm run docker:build && npm run helm:admin"
+    }
+}

@@ -1,0 +1,22 @@
+replicaCount: 1
+image:
+  repository: online-class-automation
+  pullPolicy: IfNotPresent
+  tag: "dev"
+
+userConfig:
+  username: ""
+  password: ""
+  homeUrl: ""
+  emailPrefix: ""
+  classUrl: ""
+  logLevel: "info"
+  headless: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
