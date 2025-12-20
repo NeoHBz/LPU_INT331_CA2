@@ -1,247 +1,108 @@
 # Online Platform Automation
 
-Kubernetes-based automation framework using TypeScript, Express, and Docker. Deploy scalable automation instances with individual configurations.
+Kubernetes-first automation framework built with TypeScript and Express. Each deployment runs as an isolated instance with configurable credentials, self-healing monitoring, and Kubernetes-ready health probes.
 
-> **Note:** This is a framework/template. Implement your automation logic in the stage methods: `initialize()`, `executeWorkflow()`, and `performHealthCheck()`.
+## What It Does
 
-## Architecture Overview
+- Automated monitoring loop (30s) drives the lifecycle across initialization, workflow execution, and health checks
+- Mutex-guarded execution to prevent overlapping runs; per-stage retry budgets (3 for init/health, 5 for workflow)
+- Health and readiness endpoints (`/health`, `/ready`, `/status`) for Kubernetes probes and observability
+- Helm chart + per-user values files to spin up multiple isolated instances from the same image
+- Lightweight container build on `zenika/alpine-chrome:with-puppeteer`, ready for browser automation
 
-```mermaid
-graph TB
-    subgraph "Your Implementation"
-        Code["Implement 3 Methods:<br/>1. initialize()<br/>2. executeWorkflow()<br/>3. performHealthCheck()"]
-    end
-    
-    subgraph "Framework Infrastructure"
-        Monitor[Monitoring Loop<br/>30s interval]
-        Mutex[Concurrency Control<br/>async-mutex]
-        Retry[Retry Logic<br/>3-5 attempts]
-        Health[Health Checks<br/>/health /ready]
-    end
-    
-    subgraph "Kubernetes Deployment"
-        Helm[Helm Chart]
-        Pod[Pod with Container]
-        Endpoints[API Endpoints]
-    end
-    
-    Code --> Monitor
-    Monitor --> Mutex
-    Monitor --> Retry
-    Health --> Endpoints
-    
-    Helm --> Pod
-    Pod --> Code
-    Pod --> Endpoints
-    
-    style Code fill:#FFD700
-    style Monitor fill:#87CEEB
-    style Pod fill:#90EE90
-```
+## Runtime Flow
 
-## Features
+1. Load env/config and validate required variables
+2. Start Express server (default `PORT=3000`) and create the automation runner
+3. Monitoring loop triggers stages based on `currentStage`
+   - Init → Workflow → Health check → Completed, or recovery when retries remain
+4. Status endpoints expose stage progress, retry counters, and timestamps
 
-- 🚀 **Kubernetes-Native**: Deploy with Helm charts
-- 🐳 **Containerized**: Multi-stage Docker builds  
-- 📊 **Multi-User**: Support multiple isolated instances
-- 🔧 **Configurable**: Environment-based configuration
-- 📝 **TypeScript**: Type-safe development
-- 🏥 **Health Checks**: Built-in endpoints for K8s probes (liveness, readiness)
-- 📦 **Minimal**: Optimized Alpine-based images
-- 🔒 **Concurrency Control**: Mutex-protected execution preventing race conditions
-- 🔄 **Retry Logic**: Configurable retry mechanisms per stage
-- 🎯 **Stage Management**: Execution pipeline with state tracking
-- ⏱️ **Automated Monitoring**: Self-healing with configurable health checks
+Key implementation is in [source/src/index.ts](source/src/index.ts); logging is handled by [source/src/utils/logger.ts](source/src/utils/logger.ts).
 
-## Quick Start
+## Configuration
 
-### Option 1: Kubernetes Deployment (Recommended)
+Environment variables (set directly or via Helm values/ConfigMap):
+
+| Name | Purpose |
+| ---- | ------- |
+| `USERNAME` | Account username for the target platform |
+| `PASSWORD` | Account password (mounted from Secret in Helm) |
+| `HOME_URL` | Platform home URL |
+| `EMAIL_PREFIX` | Prefix used for generated emails |
+| `TARGET_URL` | Target platform URL for automation |
+| `LOG_LEVEL` | `debug` \| `info` \| `error` (defaults to `info`) |
+| `HEADLESS` | `1` to run Puppeteer headless (default) |
+| `PORT` | API port (default `3000`) |
+| `ENV_FILE` | Optional `.env` file path to load at startup |
+
+Helm values override these via [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml). Per-user configs live in [user-configs/](user-configs/).
+
+## API
+
+- `GET /health` — liveness
+- `GET /ready` — readiness (503 when the system is failed)
+- `GET /status` — detailed status: stage, retries, last attempts, execution count
+
+## Local Development
 
 ```bash
-# 1. Setup prerequisites (Docker, kubectl, Helm, K8s cluster)
-# See K8S_SETUP.md for detailed instructions
-
-# 2. Build and deploy all users
-./automate.sh
-
-# 3. Check deployment status
-./automate.sh list
-
-# 4. View logs
-./automate.sh logs user1
+cd source
+npm install
+ENV_FILE=.env npm run dev
 ```
 
-See [KUBERNETES.md](KUBERNETES.md) for quick reference or [K8S_SETUP.md](K8S_SETUP.md) for comprehensive guide.
+Example `.env`:
 
-### Option 2: Local Development
+```env
+USERNAME=demo
+PASSWORD=secret
+HOME_URL=https://example.com
+EMAIL_PREFIX=demo+
+TARGET_URL=https://example.com/target
+LOG_LEVEL=debug
+```
+
+Build locally (TypeScript → dist):
 
 ```bash
-# 1. Clone repository
-git clone <your-repo-url>
-cd online-platform-automation
-
-# 2. Install dependencies
-cd source && npm install
-
-# 3. Run locally
-npm run dev
+npm run build
 ```
 
-For detailed deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
+## Container Image
 
-## Project Structure
+The production image is built from [source/Dockerfile](source/Dockerfile) using `zenika/alpine-chrome:with-puppeteer`. It installs production deps and runs `dist/index.js` with Chromium available for browser automation.
 
-```
-.
-├── helm/platform-automation/    # Kubernetes deployment
-│   ├── Chart.yaml              # Chart metadata
-│   ├── values.yaml             # Default values
-│   └── templates/
-│       └── deployment.yaml     # K8s deployment spec
-├── source/                     # Application code
-│   ├── Dockerfile              # Container build
-│   ├── package.json            # Dependencies
-│   ├── tsconfig.json           # TS config
-│   └── src/
-│       ├── index.ts            # Main entry point
-│       └── utils/
-│           └── logger.ts       # Logging utility
-├── user-configs/               # User configurations
-│   └── user1.yaml              # Example config
-└── package.json                # Deployment scripts
-```
+## Kubernetes Deployment
 
-## Technical Architecture
+- Prerequisites: Docker, kubectl, Helm, and a reachable cluster (kind works well)
+- Preferred flow via scripts:
 
-## Implementing Your Automation
+  ```bash
+  ./scripts/build.sh docker   # build image (includes local TS build) and load to kind when applicable
+  ./scripts/deploy.sh all     # deploy all users found in user-configs/*.yaml
+  ./scripts/deploy.sh list    # list releases and pods
+  ./scripts/deploy.sh logs user1
+  ```
 
-This framework provides production-ready infrastructure. Implement your logic in the stage methods:
+- Make targets remain available: `make build`, `make deploy`, `make deploy-user USER=user1`, `make logs USER=user1`.
+- Helm chart deploys a StatefulSet per user with defaults from [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml); adjust CPU/memory or add volumes as needed.
 
-### 1. Initialization Stage
+## File Guide
 
-```typescript
-async initialize(): Promise<boolean> {
-    try {
-        Logger.info("Initializing automation system...");
-        
-        // TODO: Add your initialization logic
-        // Examples:
-        // - Connect to databases
-        // - Initialize external clients (Puppeteer, APIs)
-        // - Load configuration files
-        // - Set up resources
-        
-        this.currentStage = ExecutionStage.INITIALIZED;
-        return true;
-    } catch (error: any) {
-        Logger.error(`Initialization failed: ${error.message}`);
-        return false;
-    }
-}
-```
+- App: [source/src/index.ts](source/src/index.ts) (lifecycle, monitoring, APIs)
+- Logging: [source/src/utils/logger.ts](source/src/utils/logger.ts)
+- Container: [source/Dockerfile](source/Dockerfile)
+- Deployment scripts: [automate.sh](automate.sh), [Makefile](Makefile)
+- Helm chart: [helm/platform-automation/](helm/platform-automation/)
+- User overrides: [user-configs/](user-configs/)
 
-### 2. Workflow Execution (Mutex-Protected)
+## Implement Your Automation
 
-```typescript
-async executeWorkflow(): Promise<boolean> {
-    // Mutex automatically prevents concurrent execution
-    try {
-        Logger.info(`Starting workflow execution #${this.executionCount}...`);
-        
-        // TODO: Implement your automation workflow
-        // Examples:
-        // - Web scraping with Puppeteer
-        // - API integrations
-        // - Data processing pipelines
-        // - Scheduled operations
-        
-        this.currentStage = ExecutionStage.WORKFLOW_COMPLETED;
-        return true;
-    } catch (error: any) {
-        Logger.error(`Workflow failed: ${error.message}`);
-        return false;
-    }
-}
-```
+Fill in the TODO blocks in the stage handlers inside [source/src/index.ts](source/src/index.ts):
 
-### 3. Health Check Stage
+- `initialize()` — prepare clients/resources
+- `executeWorkflow()` — perform the automation work (protected by a mutex)
+- `performHealthCheck()` — validate external dependencies and data health
 
-```typescript
-async performHealthCheck(): Promise<boolean> {
-    try {
-        // TODO: Add health check logic
-        // Examples:
-        // - Verify external service connections
-        // - Check resource availability
-        // - Validate data integrity
-        
-        return true;
-    } catch (error: any) {
-        Logger.error(`Health check failed: ${error.message}`);
-        return false;
-    }
-}
-```
-
-### Architecture Benefits
-
-- **Automated Monitoring**: Runs every 30 seconds checking system health
-- **Mutex Protection**: Prevents race conditions in concurrent operations
-- **Retry Logic**: Configurable retries per stage (3-5 attempts)
-- **State Tracking**: ExecutionStage enum tracks workflow progress
-- **Self-Healing**: Automatic recovery from degraded states
-
-### Execution Stage Flow
-
-```mermaid
-stateDiagram-v2
-    [*] --> INITIAL: Application Start
-    INITIAL --> INITIALIZED: initialize() succeeds
-    INITIALIZED --> WORKFLOW_RUNNING: executeWorkflow() starts
-    WORKFLOW_RUNNING --> WORKFLOW_COMPLETED: Execution complete
-    WORKFLOW_COMPLETED --> [*]: Shutdown
-    
-    INITIAL --> FAILED: Init fails (3 retries)
-    INITIALIZED --> FAILED: Workflow fails (5 retries)
-    WORKFLOW_RUNNING --> FAILED: Execution error
-    
-    FAILED --> INITIAL: Retry with recovery
-    
-    note right of WORKFLOW_RUNNING
-        performHealthCheck()
-        runs periodically
-    end note
-```
-
-## API Endpoints
-
-## API Endpoints
-
-### GET /status
-
-Returns detailed service status with stage information and retry counts.
-
-### GET /health
-
-Basic health check for Kubernetes liveness probe.
-
-### GET /ready
-
-Readiness probe - returns HTTP 200 if system is ready, 503 if failed.
-
-For detailed API documentation, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md).
-
-## Documentation
-
-- **[README.md](README.md)** - This file (project overview)
-- **[KUBERNETES.md](KUBERNETES.md)** - Quick reference for K8s deployment
-- **[K8S_SETUP.md](K8S_SETUP.md)** - Comprehensive Kubernetes setup guide
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - General deployment guide
-- **[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)** - Detailed architecture and system design
-
-## Kubernetes Deployment Files
-
-- **[automate.sh](automate.sh)** - Main automation script for building and deploying
-- **[Makefile](Makefile)** - Alternative make-based deployment commands
-- **[helm/platform-automation/](helm/platform-automation/)** - Helm chart for Kubernetes
-- **[user-configs/](user-configs/)** - User-specific configuration files
+The monitoring loop will keep invoking stages and retries; the exposed endpoints surface status to your cluster or dashboards.
