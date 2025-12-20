@@ -1,16 +1,32 @@
 # Online Platform Automation
 
-Kubernetes-first automation framework built with TypeScript and Express. Each deployment runs as an isolated instance with configurable credentials, self-healing monitoring, and Kubernetes-ready health probes.
+Kubernetes-first automation framework built with TypeScript and Express. It’s designed to run many isolated automation instances (one per “user” configuration) from the same container image, with predictable deploy/upgrade behavior via Helm.
+
+## The Problem This Solves
+
+Running browser/API automation at scale usually turns into:
+
+- Copy/pasted scripts and `.env` files per operator/user
+- Credentials leaking into repos or terminals
+- Manual “run it again” recovery when Puppeteer/external services flake
+- Ad-hoc deployment drift (different versions/configs per instance)
+
+This repo standardizes all of that:
+
+- `user-configs/*.yaml` defines per-instance configuration (including credentials via Kubernetes Secret)
+- Helm installs one release per user (e.g. `platform-user1`) so each instance is isolated, repeatable, and upgradeable
+- The app exposes probe endpoints and internal stage/retry status so Kubernetes and operators can see if it’s healthy
 
 ## What It Does
 
-- Automated monitoring loop (30s) drives the lifecycle across initialization, workflow execution, and health checks
-- Mutex-guarded execution to prevent overlapping runs; per-stage retry budgets (3 for init/health, 5 for workflow)
-- Health and readiness endpoints (`/health`, `/ready`, `/status`) for Kubernetes probes and observability
-- Helm chart + per-user values files to spin up multiple isolated instances from the same image
-- Lightweight container build on `zenika/alpine-chrome:with-puppeteer`, ready for browser automation
+- Deploys one automation instance per config in `user-configs/`
+- Uses Helm + ConfigMap/Secret to inject environment variables consistently
+- Runs a monitoring loop (30s) that drives initialization → workflow → health checks
+- Prevents overlapping execution with mutexes; retries each stage (3 for init/health, 5 for workflow)
+- Exposes `GET /health`, `GET /ready`, `GET /status` for Kubernetes probes and observability
+- Ships a lightweight runtime image based on `zenika/alpine-chrome:with-puppeteer` (Chromium included)
 
-## Runtime Flow
+## Runtime Flow (Inside Each Pod)
 
 1. Load env/config and validate required variables
 2. Start Express server (default `PORT=3000`) and create the automation runner
@@ -19,6 +35,39 @@ Kubernetes-first automation framework built with TypeScript and Express. Each de
 4. Status endpoints expose stage progress, retry counters, and timestamps
 
 Key implementation is in [source/src/index.ts](source/src/index.ts); logging is handled by [source/src/utils/logger.ts](source/src/utils/logger.ts).
+
+## Kubernetes Deployment (Helm + user-configs)
+
+- Prerequisites: Docker, kubectl, Helm, and a reachable cluster (kind works well)
+- Preferred flow via scripts:
+
+  ```bash
+  ./scripts/build.sh docker
+  ./scripts/deploy.sh all
+  ./scripts/deploy.sh list
+  ./scripts/deploy.sh logs user1
+  ```
+
+### How Helm + user-configs Work
+
+- Each `user-configs/<user>.yaml` becomes a Helm release named `platform-<user>`.
+- Helm renders:
+  - a ConfigMap for non-secret env (`USERNAME`, `HOME_URL`, `TARGET_URL`, `LOG_LEVEL`, `HEADLESS`, ...)
+  - a Secret for `PASSWORD`
+  - a StatefulSet running the container image for that user
+  - a ClusterIP Service on port `3000`
+
+This gives you safe per-user credential handling, easy upgrades (`helm upgrade`), and reproducible deployments.
+
+### Script Defaults (and Overrides)
+
+The scripts read defaults from `scripts/common.sh`:
+
+- `DOCKER_IMAGE_NAME=online-platform-automation`
+- `DOCKER_IMAGE_TAG=dev`
+- `NAMESPACE=platform-automation`
+
+Override by exporting env vars before running the scripts.
 
 ## Configuration
 
@@ -36,7 +85,7 @@ Environment variables (set directly or via Helm values/ConfigMap):
 | `PORT` | API port (default `3000`) |
 | `ENV_FILE` | Optional `.env` file path to load at startup |
 
-Helm values override these via [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml). Per-user configs live in [user-configs/](user-configs/).
+Helm values map to these via [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml). Per-user overrides live in [user-configs/](user-configs/).
 
 ## API
 
@@ -73,29 +122,14 @@ npm run build
 
 The production image is built from [source/Dockerfile](source/Dockerfile) using `zenika/alpine-chrome:with-puppeteer`. It installs production deps and runs `dist/index.js` with Chromium available for browser automation.
 
-## Kubernetes Deployment
-
-- Prerequisites: Docker, kubectl, Helm, and a reachable cluster (kind works well)
-- Preferred flow via scripts:
-
-  ```bash
-  ./scripts/build.sh docker   # build image (includes local TS build) and load to kind when applicable
-  ./scripts/deploy.sh all     # deploy all users found in user-configs/*.yaml
-  ./scripts/deploy.sh list    # list releases and pods
-  ./scripts/deploy.sh logs user1
-  ```
-
-- Make targets remain available: `make build`, `make deploy`, `make deploy-user USER=user1`, `make logs USER=user1`.
-- Helm chart deploys a StatefulSet per user with defaults from [helm/platform-automation/values.yaml](helm/platform-automation/values.yaml); adjust CPU/memory or add volumes as needed.
-
 ## File Guide
 
 - App: [source/src/index.ts](source/src/index.ts) (lifecycle, monitoring, APIs)
 - Logging: [source/src/utils/logger.ts](source/src/utils/logger.ts)
 - Container: [source/Dockerfile](source/Dockerfile)
-- Deployment scripts: [automate.sh](automate.sh), [Makefile](Makefile)
+- Deployment scripts: [scripts/build.sh](scripts/build.sh), [scripts/deploy.sh](scripts/deploy.sh) (or [Makefile](Makefile))
 - Helm chart: [helm/platform-automation/](helm/platform-automation/)
-- User overrides: [user-configs/](user-configs/)
+- Per-user values: [user-configs/](user-configs/)
 
 ## Implement Your Automation
 
