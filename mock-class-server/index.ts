@@ -1,10 +1,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import http from 'http';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
-const wss = new WebSocketServer({ port: PORT });
-
-console.log(`WebSocket server started on port ${PORT}`);
-console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 
 interface User {
     id: string;
@@ -15,6 +12,38 @@ interface User {
 }
 
 const activeUsers: Map<string, User> = new Map();
+
+const server = http.createServer((req, res) => {
+    if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Server is running');
+    } else if (req.url === '/health') {
+        const stats = {
+            status: 'ok',
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            activeUsers: activeUsers.size,
+            connectedClients: wss.clients.size,
+            timestamp: new Date().toISOString(),
+            environment: process.env.NODE_ENV || 'development',
+            nodeVersion: process.version,
+            platform: process.platform
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(stats, null, 2));
+    } else {
+        res.writeHead(404);
+        res.end();
+    }
+});
+
+const wss = new WebSocketServer({ server });
+
+server.listen(PORT, () => {
+    console.log(`Server started on port ${PORT}`);
+    console.log(`WebSocket server is attached to the HTTP server`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});
 
 wss.on('connection', (ws) => {
     console.log('Client connected');
