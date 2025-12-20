@@ -43,3 +43,6 @@ dist-ssr
 *.sln
 *.sw?
 build_artifact.zip
+!README.md
+!PROJECT_SYNOPSIS.md
+*.md
