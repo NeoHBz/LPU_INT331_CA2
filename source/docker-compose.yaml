@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  platform-user1:
+    image: zenika/alpine-chrome:with-puppeteer
+    working_dir: /app
+    volumes:
+      - ./source:/app:cached
+      - ./source/node_modules:/app/node_modules:cached
+    environment:
+      - NODE_ENV=development
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - USERNAME=user1
+      - PASSWORD=password1
+    command: ["node", "--loader", "ts-node/esm", "src/index.ts"]
+    ports:
+      - "3001:3000"
+    networks:
+      - platform-network
+
+  platform-user2:
+    image: zenika/alpine-chrome:with-puppeteer
+    working_dir: /app
+    volumes:
+      - ./source:/app:cached
+      - ./source/node_modules:/app/node_modules:cached
+    environment:
+      - NODE_ENV=development
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - USERNAME=user2
+      - PASSWORD=password2
+    command: ["node", "--loader", "ts-node/esm", "src/index.ts"]
+    ports:
+      - "3002:3000"
+    networks:
+      - platform-network
+
+networks:
+  platform-network:
+    driver: bridge

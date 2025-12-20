@@ -1,0 +1,43 @@
+# Helm ignore patterns
+# Exclude files and directories that shouldn't be packaged with the Helm chart
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (optional - uncomment if you don't want to include)
+# README.md
+# NOTES.md
+
+# Testing
+tests/
+test/
+*.test.yaml
+*.test.yml
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+.*.swp
+
+# User configs (these should be applied separately, not packaged)
+# Uncomment the next line if you don't want user configs in the chart package
+# ../user-configs/

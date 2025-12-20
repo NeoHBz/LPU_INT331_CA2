@@ -1,22 +1,23 @@
-FROM node:18-bullseye AS builder
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-common \
-    ca-certificates
-RUN mkdir -p /etc/chromium.d
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY . .
-RUN npm run build
-RUN npx --yes javascript-obfuscator dist --output dist
+# syntax=docker/dockerfile:1
 
+# Use alpine-chrome directly (it already has Node.js and Chromium)
 FROM zenika/alpine-chrome:with-puppeteer
 WORKDIR /app
 
-COPY --from=builder /app/dist dist
-COPY --from=builder /app/node_modules node_modules
+# Copy package files first (for caching)
+COPY package*.json ./
+
+# Install production dependencies with cache mount
+# This layer is cached unless package.json changes
+RUN --mount=type=cache,target=/root/.npm \
+    if [ -f package-lock.json ]; then \
+        npm ci --omit=dev; \
+    else \
+        npm install --production; \
+    fi
+
+# Copy pre-built application (changes frequently, so do last)
+COPY dist/ ./dist/
 
 ENV NODE_ENV=production
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium

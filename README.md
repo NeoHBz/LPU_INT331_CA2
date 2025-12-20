@@ -55,21 +55,36 @@ graph TB
 
 ## Quick Start
 
+### Option 1: Kubernetes Deployment (Recommended)
+
+```bash
+# 1. Setup prerequisites (Docker, kubectl, Helm, K8s cluster)
+# See K8S_SETUP.md for detailed instructions
+
+# 2. Build and deploy all users
+./automate.sh
+
+# 3. Check deployment status
+./automate.sh list
+
+# 4. View logs
+./automate.sh logs user1
+```
+
+See [KUBERNETES.md](KUBERNETES.md) for quick reference or [K8S_SETUP.md](K8S_SETUP.md) for comprehensive guide.
+
+### Option 2: Local Development
+
 ```bash
 # 1. Clone repository
 git clone <your-repo-url>
 cd online-platform-automation
 
-# 2. Build Docker image
-npm run docker:build
+# 2. Install dependencies
+cd source && npm install
 
-# 3. Configure user (edit user-configs/user1.yaml)
-# 4. Deploy to Kubernetes
-helm install user1 helm/platform-automation -f user-configs/user1.yaml
-
-# 5. Verify deployment
-kubectl get pods
-kubectl logs -f -l app=user1
+# 3. Run locally
+npm run dev
 ```
 
 For detailed deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
@@ -219,5 +234,14 @@ For detailed API documentation, see [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUM
 ## Documentation
 
 - **[README.md](README.md)** - This file (project overview)
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide
+- **[KUBERNETES.md](KUBERNETES.md)** - Quick reference for K8s deployment
+- **[K8S_SETUP.md](K8S_SETUP.md)** - Comprehensive Kubernetes setup guide
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - General deployment guide
 - **[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)** - Detailed architecture and system design
+
+## Kubernetes Deployment Files
+
+- **[automate.sh](automate.sh)** - Main automation script for building and deploying
+- **[Makefile](Makefile)** - Alternative make-based deployment commands
+- **[helm/platform-automation/](helm/platform-automation/)** - Helm chart for Kubernetes
+- **[user-configs/](user-configs/)** - User-specific configuration files

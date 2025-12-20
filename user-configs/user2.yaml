@@ -1,9 +1,11 @@
 userConfig:
-  username: "alicesmith"
-  password: "password123"
+  username: "bobsmith"
+  password: "securepass456"
   homepageUrl: "http://localhost:5173"
-  emailPrefix: "alice"
+  emailPrefix: "bob"
   targetUrl: "http://localhost:5173/class"
+  logLevel: "debug"
+  headless: 1
 
 resources:
   limits:

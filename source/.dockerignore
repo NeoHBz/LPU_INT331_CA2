@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Documentation
+*.md
+README.md
+docs/
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build output (we copy pre-built dist explicitly)
+# dist/ - REMOVED: We want to copy the pre-built dist folder
+
+# Source files (not needed, we copy pre-built code)
+src/
+*.ts
+tsconfig.json
+
+# Dependencies (installed in Docker)
+node_modules/
+
+# Test files
+test/
+tests/
+**/*.test.js
+**/*.spec.js
+coverage/
+.nyc_output/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Helm charts and k8s configs
+helm/
+k8s/
+*.yaml
+*.yml
+
+# Build artifacts
+*.zip
+*.tar.gz
+
+# IMPORTANT: Allow these files
+!package.json
+!package-lock.json
+!dist/**

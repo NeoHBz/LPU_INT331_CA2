@@ -1,4 +1,5 @@
 replicaCount: 1
+
 image:
   repository: online-platform-automation
   pullPolicy: IfNotPresent
@@ -7,7 +8,7 @@ image:
 userConfig:
   username: ""
   password: ""
-  homeUrl: ""
+  homepageUrl: "" # Replaced homeUrl
   emailPrefix: ""
   targetUrl: ""
   logLevel: "info"
@@ -20,3 +21,22 @@ resources:
   requests:
     cpu: 100m
     memory: 256Mi
+
+# Optional: Node selector for pod placement
+nodeSelector: {}
+
+# Optional: Tolerations for pod scheduling
+tolerations: []
+
+# Optional: Affinity rules
+affinity: {}
+
+# Optional: Volume mounts
+volumeMounts: []
+  # - name: screenshots
+  #   mountPath: /app/screenshots
+
+# Optional: Volumes
+volumes: []
+  # - name: screenshots
+  #   emptyDir: {}

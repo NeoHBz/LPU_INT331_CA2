@@ -1,8 +1,9 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ .Release.Name }}
 spec:
+  serviceName: {{ .Release.Name }}-service
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
@@ -15,21 +16,16 @@ spec:
       containers:
       - name: automation
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: {{ .Release.Name }}-config
         env:
-        - name: USERNAME
-          value: "{{ .Values.userConfig.username }}"
         - name: PASSWORD
-          value: "{{ .Values.userConfig.password }}"
-        - name: HOME_URL
-          value: "{{ .Values.userConfig.homeUrl }}"
-        - name: EMAIL_PREFIX
-          value: "{{ .Values.userConfig.emailPrefix }}"
-        - name: TARGET_URL
-          value: "{{ .Values.userConfig.targetUrl }}"
-        - name: LOG_LEVEL
-          value: "{{ .Values.userConfig.logLevel }}"
-        - name: HEADLESS
-          value: "{{ .Values.userConfig.headless }}"
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-secret
+              key: password
         resources:
           limits:
             cpu: {{ .Values.resources.limits.cpu }}
@@ -37,3 +33,11 @@ spec:
           requests:
             cpu: {{ .Values.resources.requests.cpu }}
             memory: {{ .Values.resources.requests.memory }}
+        {{- if .Values.volumeMounts }}
+        volumeMounts:
+        {{- toYaml .Values.volumeMounts | nindent 8 }}
+        {{- end }}
+      {{- if .Values.volumes }}
+      volumes:
+      {{- toYaml .Values.volumes | nindent 6 }}
+      {{- end }}
