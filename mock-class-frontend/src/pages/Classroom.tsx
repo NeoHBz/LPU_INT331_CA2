@@ -13,9 +13,35 @@ const Classroom = () => {
     const navigate = useNavigate();
     const [users, setUsers] = useState<User[]>([]);
     const ws = useRef<WebSocket | null>(null);
-    const myUserId = useRef<string>(`user-${Date.now()}`);
+    const myUserId = useRef<string>('');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handleServerMessage = (data: any) => {
+        console.log('Received message:', data);
+        switch (data.type) {
+            case 'INITIAL_STATE': 
+                console.log('Setting initial users:', data.users);
+                setUsers(data.users); 
+                break;
+            case 'USER_JOINED': 
+                console.log('User joined:', data.user);
+                setUsers(prev => [...prev, data.user]); 
+                break;
+            case 'USER_LEFT': 
+                console.log('User left:', data.userId);
+                setUsers(prev => prev.filter(u => u.id !== data.userId)); 
+                break;
+            case 'USER_UPDATE': 
+                console.log('User updated:', data.user);
+                setUsers(prev => prev.map(u => u.id === data.user.id ? data.user : u)); 
+                break;
+        }
+    };
 
     useEffect(() => {
+        // Generate a stable user ID once after mount (impure Date.now() used inside effect)
+        myUserId.current = `user-${Date.now()}`;
+
         const token = localStorage.getItem('authToken');
         if (!token) {
             navigate('/');
@@ -59,28 +85,6 @@ const Classroom = () => {
         connect();
         return () => { ws.current?.close(); };
     }, []);
-
-    const handleServerMessage = (data: any) => {
-        console.log('Received message:', data);
-        switch (data.type) {
-            case 'INITIAL_STATE': 
-                console.log('Setting initial users:', data.users);
-                setUsers(data.users); 
-                break;
-            case 'USER_JOINED': 
-                console.log('User joined:', data.user);
-                setUsers(prev => [...prev, data.user]); 
-                break;
-            case 'USER_LEFT': 
-                console.log('User left:', data.userId);
-                setUsers(prev => prev.filter(u => u.id !== data.userId)); 
-                break;
-            case 'USER_UPDATE': 
-                console.log('User updated:', data.user);
-                setUsers(prev => prev.map(u => u.id === data.user.id ? data.user : u)); 
-                break;
-        }
-    };
 
     const leaveClass = () => {
         localStorage.removeItem('authToken');
