@@ -26,12 +26,28 @@ const Classroom = () => {
                 console.log('Setting initial users:', data.users);
                 setUsers(data.users); 
                 break;
+            case 'JOIN_CONFIRMED':
+                console.log('Join confirmed for:', data.user);
+                // Add ourselves only after server confirmation
+                setUsers(prev => {
+                    const exists = prev.some(u => u.id === data.user.id);
+                    if (exists) {
+                        console.log('User already in list, skipping');
+                        return prev;
+                    }
+                    return [...prev, data.user];
+                });
+                break;
             case 'USER_JOINED': 
                 console.log('User joined:', data.user);
-                // Prevent duplicate entries - check if user already exists
+                // Prevent duplicate entries - use Set for deduplication
                 setUsers(prev => {
-                    const exists = prev.some(u => u.id === data.user.id || u.fullName === data.user.fullName);
-                    return exists ? prev : [...prev, data.user];
+                    const exists = prev.some(u => u.id === data.user.id);
+                    if (exists) {
+                        console.log('User already in list, skipping duplicate');
+                        return prev;
+                    }
+                    return [...prev, data.user];
                 });
                 break;
             case 'USER_LEFT': 
@@ -40,7 +56,11 @@ const Classroom = () => {
                 break;
             case 'USER_UPDATE': 
                 console.log('User updated:', data.user);
-                setUsers(prev => prev.map(u => u.id === data.user.id ? data.user : u)); 
+                setUsers(prev => {
+                    const updated = prev.map(u => u.id === data.user.id ? data.user : u);
+                    // If user doesn't exist, don't add them via UPDATE
+                    return updated;
+                }); 
                 break;
         }
     };
@@ -67,7 +87,7 @@ const Classroom = () => {
                 const fullName = localStorage.getItem('fullName') || username;
                 const avatar = localStorage.getItem('avatar') || getInitials(fullName);
                 
-                // Announce that we've joined - add immediately for instant feedback
+                // Announce that we've joined
                 const myUser: User = {
                     id: myUserId,
                     fullName,
@@ -75,14 +95,14 @@ const Classroom = () => {
                     isMicOn: false,
                 };
                 
-                // Add ourselves immediately
-                setUsers(prev => [...prev, myUser]);
-                
-                // Then notify server (deduplication logic prevents duplicate on echo)
+                // Send JOIN request and wait for server confirmation
+                // Don't add ourselves until we receive JOIN_CONFIRMED
                 ws.current?.send(JSON.stringify({
                     type: 'JOIN',
                     user: myUser
                 }));
+                
+                console.log('JOIN request sent, waiting for server confirmation');
             };
 
             ws.current.onmessage = (event) => {

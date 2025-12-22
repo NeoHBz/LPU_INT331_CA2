@@ -137,13 +137,33 @@ wss.on('connection', (ws) => {
                 case 'JOIN':
                     // Client announces they've joined
                     if (data.user && data.user.id) {
+                        // Prevent duplicate joins from same user
+                        if (activeUsers.has(data.user.id)) {
+                            console.log(`User already exists: ${data.user.fullName}, ignoring duplicate JOIN`);
+                            // Still send confirmation to the client
+                            ws.send(JSON.stringify({
+                                type: 'JOIN_CONFIRMED',
+                                user: activeUsers.get(data.user.id)
+                            }));
+                            break;
+                        }
+                        
                         activeUsers.set(data.user.id, data.user);
                         userId = data.user.id;
+                        
+                        // Confirm join to the sender
+                        ws.send(JSON.stringify({
+                            type: 'JOIN_CONFIRMED',
+                            user: data.user
+                        }));
+                        
+                        // Broadcast to others (not the sender)
                         broadcast({
                             type: 'USER_JOINED',
                             user: data.user
                         }, ws);
-                        console.log(`User joined: ${data.user.fullName}`);
+                        
+                        console.log(`User joined: ${data.user.fullName} (${data.user.id})`);
                     }
                     break;
                     
@@ -151,10 +171,12 @@ wss.on('connection', (ws) => {
                     // Client updates their state (mic, speaking, etc)
                     if (data.user && data.user.id) {
                         activeUsers.set(data.user.id, data.user);
+                        
+                        // Broadcast to all including sender for state sync
                         broadcast({
                             type: 'USER_UPDATE',
                             user: data.user
-                        }, ws);
+                        });
                     }
                     break;
                     
