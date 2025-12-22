@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MdCallEnd } from 'react-icons/md';
 
@@ -15,95 +15,129 @@ const Classroom = () => {
     const [myUserId] = useState(() => `user-${Date.now()}`);
     const ws = useRef<WebSocket | null>(null);
     const hasJoined = useRef(false);
+    const updateQueue = useRef<Array<{type: string, data: User | string | User[]}>>([]);
+    const flushTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const getInitials = (value: string) =>
         value.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
 
+    // Batch state updates to prevent flicker
+    const flushUpdateQueue = () => {
+        if (updateQueue.current.length === 0) return;
+        
+        console.log(`[${new Date().toISOString()}] [BATCH] 📦 Flushing ${updateQueue.current.length} queued updates`);
+        const updates = [...updateQueue.current];
+        updateQueue.current = [];
+        
+        setUsers(prev => {
+            let current = [...prev];
+            console.log(`[${new Date().toISOString()}] [BATCH] Starting with ${current.length} users`);
+            
+            for (const update of updates) {
+                switch (update.type) {
+                    case 'ADD': {
+                        const userData = update.data as User;
+                        const exists = current.some(u => u.id === userData.id);
+                        if (!exists) {
+                            current.push(userData);
+                            console.log(`[${new Date().toISOString()}] [BATCH] Added: ${userData.fullName}`);
+                        }
+                        break;
+                    }
+                    case 'REMOVE': {
+                        const userId = update.data as string;
+                        current = current.filter(u => u.id !== userId);
+                        console.log(`[${new Date().toISOString()}] [BATCH] Removed: ${userId}`);
+                        break;
+                    }
+                    case 'UPDATE': {
+                        const userData = update.data as User;
+                        current = current.map(u => u.id === userData.id ? userData : u);
+                        console.log(`[${new Date().toISOString()}] [BATCH] Updated: ${userData.fullName}`);
+                        break;
+                    }
+                    case 'REPLACE': {
+                        const usersData = update.data as User[];
+                        current = usersData;
+                        console.log(`[${new Date().toISOString()}] [BATCH] Replaced with ${usersData.length} users`);
+                        break;
+                    }
+                }
+            }
+            
+            console.log(`[${new Date().toISOString()}] [BATCH] ✅ Final count: ${current.length} users`);
+            return current;
+        });
+    };
+
+    const queueUpdate = useCallback((type: string, data: User | string | User[]) => {
+        updateQueue.current.push({ type, data });
+        
+        // Clear existing timeout
+        if (flushTimeout.current) {
+            clearTimeout(flushTimeout.current);
+        }
+        
+        // Flush after 50ms of no new updates (debounce)
+        flushTimeout.current = setTimeout(() => {
+            flushUpdateQueue();
+        }, 50);
+    }, []);
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const handleServerMessage = (data: any) => {
+    const handleServerMessage = useCallback((data: any) => {
         switch (data.type) {
             case 'INITIAL_STATE': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 INITIAL_STATE received. Users count: ${data.users.length}`);
                 console.log(`[${new Date().toISOString()}] [STATE] Users in INITIAL_STATE:`, data.users.map((u: User) => ({ id: u.id, name: u.fullName })));
-                // Merge with existing users to prevent overwriting
-                setUsers(prev => {
-                    console.log(`[${new Date().toISOString()}] [STATE] Current users before merge:`, prev.map(u => ({ id: u.id, name: u.fullName })));
-                    console.log(`[${new Date().toISOString()}] [STATE] hasJoined.current: ${hasJoined.current}`);
-                    
-                    // If we haven't joined yet, just use the initial state
-                    if (!hasJoined.current) {
-                        console.log(`[${new Date().toISOString()}] [STATE] ✅ Not joined yet, using INITIAL_STATE as-is`);
-                        return data.users;
-                    }
-                    // Otherwise, merge intelligently
-                    const existingIds = new Set(prev.map(u => u.id));
-                    const newUsers = data.users.filter((u: User) => !existingIds.has(u.id));
-                    console.log(`[${new Date().toISOString()}] [STATE] 🔄 Merging: ${newUsers.length} new users with ${prev.length} existing users`);
-                    console.log(`[${new Date().toISOString()}] [STATE] New users to add:`, newUsers.map((u: User) => ({ id: u.id, name: u.fullName })));
-                    const merged = [...prev, ...newUsers];
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Merged result:`, merged.map(u => ({ id: u.id, name: u.fullName })));
-                    return merged;
-                });
+                
+                // If we haven't joined yet, replace immediately
+                if (!hasJoined.current) {
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Not joined yet, using INITIAL_STATE as-is`);
+                    queueUpdate('REPLACE', data.users);
+                } else {
+                    // Merge new users
+                    setUsers(prev => {
+                        const existingIds = new Set(prev.map(u => u.id));
+                        const newUsers = data.users.filter((u: User) => !existingIds.has(u.id));
+                        console.log(`[${new Date().toISOString()}] [STATE] 🔄 Merging: ${newUsers.length} new users with ${prev.length} existing users`);
+                        return [...prev, ...newUsers];
+                    });
+                }
                 break;
             case 'JOIN_CONFIRMED':
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 JOIN_CONFIRMED received for:`, data.user);
                 console.log(`[${new Date().toISOString()}] [STATE] Setting hasJoined.current = true`);
                 hasJoined.current = true;
-                // Add ourselves only after server confirmation
+                
+                // Check if we already exist before adding
                 setUsers(prev => {
-                    console.log(`[${new Date().toISOString()}] [STATE] Current users before JOIN_CONFIRMED:`, prev.map(u => ({ id: u.id, name: u.fullName })));
                     const exists = prev.some(u => u.id === data.user.id);
-                    console.log(`[${new Date().toISOString()}] [STATE] User already exists: ${exists}`);
                     if (exists) {
-                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  User already in list, skipping add`);
+                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  Already in list, skipping`);
                         return prev;
                     }
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding self to user list`);
-                    const updated = [...prev, data.user];
-                    console.log(`[${new Date().toISOString()}] [STATE] Updated user list:`, updated.map(u => ({ id: u.id, name: u.fullName })));
-                    return updated;
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding self immediately`);
+                    return [...prev, data.user];
                 });
                 break;
             case 'USER_JOINED': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_JOINED received:`, data.user);
-                // Prevent duplicate entries - use Set for deduplication
-                setUsers(prev => {
-                    console.log(`[${new Date().toISOString()}] [STATE] Current users before USER_JOINED:`, prev.map(u => ({ id: u.id, name: u.fullName })));
-                    const exists = prev.some(u => u.id === data.user.id);
-                    console.log(`[${new Date().toISOString()}] [STATE] User already exists: ${exists}`);
-                    if (exists) {
-                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  User already in list, skipping duplicate: ${data.user.fullName}`);
-                        return prev;
-                    }
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding new user: ${data.user.fullName}`);
-                    const updated = [...prev, data.user];
-                    console.log(`[${new Date().toISOString()}] [STATE] Updated user list:`, updated.map(u => ({ id: u.id, name: u.fullName })));
-                    return updated;
-                });
+                console.log(`[${new Date().toISOString()}] [BATCH] 📥 Queueing ADD for: ${data.user.fullName}`);
+                queueUpdate('ADD', data.user);
                 break;
             case 'USER_LEFT': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_LEFT received. UserId: ${data.userId}`);
-                setUsers(prev => {
-                    console.log(`[${new Date().toISOString()}] [STATE] Current users before removal:`, prev.map(u => ({ id: u.id, name: u.fullName })));
-                    const filtered = prev.filter(u => u.id !== data.userId);
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Users after removal:`, filtered.map(u => ({ id: u.id, name: u.fullName })));
-                    return filtered;
-                });
+                console.log(`[${new Date().toISOString()}] [BATCH] 📥 Queueing REMOVE for: ${data.userId}`);
+                queueUpdate('REMOVE', data.userId);
                 break;
             case 'USER_UPDATE': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_UPDATE received:`, data.user);
-                setUsers(prev => {
-                    console.log(`[${new Date().toISOString()}] [STATE] Current users before update:`, prev.map(u => ({ id: u.id, name: u.fullName })));
-                    const userExists = prev.some(u => u.id === data.user.id);
-                    console.log(`[${new Date().toISOString()}] [STATE] User exists: ${userExists}`);
-                    const updated = prev.map(u => u.id === data.user.id ? data.user : u);
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Users after update:`, updated.map(u => ({ id: u.id, name: u.fullName })));
-                    // If user doesn't exist, don't add them via UPDATE
-                    return updated;
-                }); 
+                console.log(`[${new Date().toISOString()}] [BATCH] 📥 Queueing UPDATE for: ${data.user.fullName}`);
+                queueUpdate('UPDATE', data.user);
                 break;
         }
-    };
+    }, [queueUpdate]);
 
     useEffect(() => {
         const token = localStorage.getItem('authToken');
@@ -168,7 +202,7 @@ const Classroom = () => {
         };
         connect();
         return () => { ws.current?.close(); };
-    }, [myUserId]);
+    }, [myUserId, handleServerMessage]);
 
     const leaveClass = () => {
         localStorage.removeItem('authToken');
