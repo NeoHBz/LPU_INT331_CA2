@@ -122,6 +122,8 @@ deploy_all_users() {
     
     local success_count=0
     local fail_count=0
+    local total_users=${#config_files[@]}
+    local current_user=0
     
     for config_file in "${config_files[@]}"; do
         # Skip if it's the README or not a file
@@ -129,11 +131,22 @@ deploy_all_users() {
             continue
         fi
         
+        ((current_user++))
+        
         if deploy_user "$config_file"; then
             ((success_count++))
         else
             ((fail_count++))
         fi
+        
+        # Add random delay between deployments (0.5-2 seconds)
+        # Skip delay for the last user
+        if [ $current_user -lt $total_users ]; then
+            local delay=$(awk -v min=0.5 -v max=2.0 'BEGIN{srand(); print min+rand()*(max-min)}')
+            print_info "Waiting ${delay}s before next deployment..."
+            sleep "$delay"
+        fi
+        
         echo "" # Add spacing between deployments
     done
     

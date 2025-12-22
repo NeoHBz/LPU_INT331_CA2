@@ -120,14 +120,18 @@ server.listen(PORT, () => {
 });
 
 wss.on('connection', (ws) => {
-    console.log('Client connected');
+    const connectionTime = new Date().toISOString();
+    console.log(`[${connectionTime}] [CONN] New client connected. Total clients: ${wss.clients.size}`);
     let userId: string | null = null;
 
     // Send initial state (current users in room)
-    ws.send(JSON.stringify({
+    const initialState = {
         type: 'INITIAL_STATE',
         users: Array.from(activeUsers.values())
-    }));
+    };
+    console.log(`[${new Date().toISOString()}] [SEND] → INITIAL_STATE to new client. Users count: ${initialState.users.length}`, 
+        initialState.users.map(u => ({ id: u.id, name: u.fullName })));
+    ws.send(JSON.stringify(initialState));
 
     ws.on('message', (message) => {
         try {
@@ -137,42 +141,55 @@ wss.on('connection', (ws) => {
                 case 'JOIN':
                     // Client announces they've joined
                     if (data.user && data.user.id) {
+                        console.log(`[${new Date().toISOString()}] [RECV] ← JOIN request from: ${data.user.fullName} (${data.user.id})`);
+                        
                         // Prevent duplicate joins from same user
                         if (activeUsers.has(data.user.id)) {
-                            console.log(`User already exists: ${data.user.fullName}, ignoring duplicate JOIN`);
+                            console.log(`[${new Date().toISOString()}] [WARN] ⚠️  Duplicate JOIN detected for: ${data.user.fullName} (${data.user.id})`);
+                            console.log(`[${new Date().toISOString()}] [INFO] Active users before duplicate: ${Array.from(activeUsers.keys())}`);
                             // Still send confirmation to the client
-                            ws.send(JSON.stringify({
+                            const confirmMsg = {
                                 type: 'JOIN_CONFIRMED',
                                 user: activeUsers.get(data.user.id)
-                            }));
+                            };
+                            console.log(`[${new Date().toISOString()}] [SEND] → JOIN_CONFIRMED (duplicate) to: ${data.user.fullName}`);
+                            ws.send(JSON.stringify(confirmMsg));
                             break;
                         }
                         
+                        console.log(`[${new Date().toISOString()}] [INFO] Adding user to activeUsers map`);
                         activeUsers.set(data.user.id, data.user);
                         userId = data.user.id;
+                        console.log(`[${new Date().toISOString()}] [INFO] Active users after add: [${Array.from(activeUsers.keys())}]. Total: ${activeUsers.size}`);
                         
                         // Confirm join to the sender
-                        ws.send(JSON.stringify({
+                        const confirmMsg = {
                             type: 'JOIN_CONFIRMED',
                             user: data.user
-                        }));
+                        };
+                        console.log(`[${new Date().toISOString()}] [SEND] → JOIN_CONFIRMED to: ${data.user.fullName} (${data.user.id})`);
+                        ws.send(JSON.stringify(confirmMsg));
                         
                         // Broadcast to others (not the sender)
-                        broadcast({
+                        const broadcastMsg = {
                             type: 'USER_JOINED',
                             user: data.user
-                        }, ws);
+                        };
+                        console.log(`[${new Date().toISOString()}] [BROADCAST] 📢 USER_JOINED to ${wss.clients.size - 1} other clients: ${data.user.fullName} (${data.user.id})`);
+                        broadcast(broadcastMsg, ws);
                         
-                        console.log(`User joined: ${data.user.fullName} (${data.user.id})`);
+                        console.log(`[${new Date().toISOString()}] [SUCCESS] ✅ User joined successfully: ${data.user.fullName} (${data.user.id})`);
                     }
                     break;
                     
                 case 'UPDATE':
                     // Client updates their state (mic, speaking, etc)
                     if (data.user && data.user.id) {
+                        console.log(`[${new Date().toISOString()}] [RECV] ← UPDATE from: ${data.user.fullName} (${data.user.id})`);
                         activeUsers.set(data.user.id, data.user);
                         
                         // Broadcast to all including sender for state sync
+                        console.log(`[${new Date().toISOString()}] [BROADCAST] 📢 USER_UPDATE to all ${wss.clients.size} clients`);
                         broadcast({
                             type: 'USER_UPDATE',
                             user: data.user
@@ -182,10 +199,13 @@ wss.on('connection', (ws) => {
                     
                 case 'SYNC':
                     // Client requests current state
-                    ws.send(JSON.stringify({
+                    console.log(`[${new Date().toISOString()}] [RECV] ← SYNC request from client`);
+                    const syncState = {
                         type: 'INITIAL_STATE',
                         users: Array.from(activeUsers.values())
-                    }));
+                    };
+                    console.log(`[${new Date().toISOString()}] [SEND] → INITIAL_STATE (sync). Users: ${syncState.users.length}`);
+                    ws.send(JSON.stringify(syncState));
                     break;
             }
         } catch (error) {
@@ -194,15 +214,23 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
+        const closeTime = new Date().toISOString();
+        console.log(`[${closeTime}] [CONN] Client disconnected. Remaining clients: ${wss.clients.size - 1}`);
         if (userId) {
+            const userName = activeUsers.get(userId)?.fullName || 'Unknown';
+            console.log(`[${closeTime}] [INFO] Removing user from activeUsers: ${userName} (${userId})`);
             activeUsers.delete(userId);
-            broadcast({
+            console.log(`[${closeTime}] [INFO] Active users after remove: [${Array.from(activeUsers.keys())}]. Total: ${activeUsers.size}`);
+            
+            const leaveMsg = {
                 type: 'USER_LEFT',
                 userId: userId
-            });
-            console.log(`User left: ${userId}`);
+            };
+            console.log(`[${closeTime}] [BROADCAST] 📢 USER_LEFT to ${wss.clients.size} clients: ${userName} (${userId})`);
+            broadcast(leaveMsg);
+            
+            console.log(`[${closeTime}] [SUCCESS] ✅ User left: ${userName} (${userId})`);
         }
-        console.log('Client disconnected');
     });
 });
 

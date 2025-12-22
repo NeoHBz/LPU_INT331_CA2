@@ -14,6 +14,7 @@ const Classroom = () => {
     const [users, setUsers] = useState<User[]>([]);
     const [myUserId] = useState(() => `user-${Date.now()}`);
     const ws = useRef<WebSocket | null>(null);
+    const hasJoined = useRef(false);
 
     const getInitials = (value: string) =>
         value.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
@@ -23,41 +24,81 @@ const Classroom = () => {
         console.log('Received message:', data);
         switch (data.type) {
             case 'INITIAL_STATE': 
-                console.log('Setting initial users:', data.users);
-                setUsers(data.users); 
+                console.log(`[${new Date().toISOString()}] [MSG] 📨 INITIAL_STATE received. Users count: ${data.users.length}`);
+                console.log(`[${new Date().toISOString()}] [STATE] Users in INITIAL_STATE:`, data.users.map((u: User) => ({ id: u.id, name: u.fullName })));
+                // Merge with existing users to prevent overwriting
+                setUsers(prev => {
+                    console.log(`[${new Date().toISOString()}] [STATE] Current users before merge:`, prev.map(u => ({ id: u.id, name: u.fullName })));
+                    console.log(`[${new Date().toISOString()}] [STATE] hasJoined.current: ${hasJoined.current}`);
+                    
+                    // If we haven't joined yet, just use the initial state
+                    if (!hasJoined.current) {
+                        console.log(`[${new Date().toISOString()}] [STATE] ✅ Not joined yet, using INITIAL_STATE as-is`);
+                        return data.users;
+                    }
+                    // Otherwise, merge intelligently
+                    const existingIds = new Set(prev.map(u => u.id));
+                    const newUsers = data.users.filter((u: User) => !existingIds.has(u.id));
+                    console.log(`[${new Date().toISOString()}] [STATE] 🔄 Merging: ${newUsers.length} new users with ${prev.length} existing users`);
+                    console.log(`[${new Date().toISOString()}] [STATE] New users to add:`, newUsers.map((u: User) => ({ id: u.id, name: u.fullName })));
+                    const merged = [...prev, ...newUsers];
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Merged result:`, merged.map(u => ({ id: u.id, name: u.fullName })));
+                    return merged;
+                });
                 break;
             case 'JOIN_CONFIRMED':
-                console.log('Join confirmed for:', data.user);
+                console.log(`[${new Date().toISOString()}] [MSG] 📨 JOIN_CONFIRMED received for:`, data.user);
+                console.log(`[${new Date().toISOString()}] [STATE] Setting hasJoined.current = true`);
+                hasJoined.current = true;
                 // Add ourselves only after server confirmation
                 setUsers(prev => {
+                    console.log(`[${new Date().toISOString()}] [STATE] Current users before JOIN_CONFIRMED:`, prev.map(u => ({ id: u.id, name: u.fullName })));
                     const exists = prev.some(u => u.id === data.user.id);
+                    console.log(`[${new Date().toISOString()}] [STATE] User already exists: ${exists}`);
                     if (exists) {
-                        console.log('User already in list, skipping');
+                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  User already in list, skipping add`);
                         return prev;
                     }
-                    return [...prev, data.user];
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding self to user list`);
+                    const updated = [...prev, data.user];
+                    console.log(`[${new Date().toISOString()}] [STATE] Updated user list:`, updated.map(u => ({ id: u.id, name: u.fullName })));
+                    return updated;
                 });
                 break;
             case 'USER_JOINED': 
-                console.log('User joined:', data.user);
+                console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_JOINED received:`, data.user);
                 // Prevent duplicate entries - use Set for deduplication
                 setUsers(prev => {
+                    console.log(`[${new Date().toISOString()}] [STATE] Current users before USER_JOINED:`, prev.map(u => ({ id: u.id, name: u.fullName })));
                     const exists = prev.some(u => u.id === data.user.id);
+                    console.log(`[${new Date().toISOString()}] [STATE] User already exists: ${exists}`);
                     if (exists) {
-                        console.log('User already in list, skipping duplicate');
+                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  User already in list, skipping duplicate: ${data.user.fullName}`);
                         return prev;
                     }
-                    return [...prev, data.user];
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding new user: ${data.user.fullName}`);
+                    const updated = [...prev, data.user];
+                    console.log(`[${new Date().toISOString()}] [STATE] Updated user list:`, updated.map(u => ({ id: u.id, name: u.fullName })));
+                    return updated;
                 });
                 break;
             case 'USER_LEFT': 
-                console.log('User left:', data.userId);
-                setUsers(prev => prev.filter(u => u.id !== data.userId)); 
+                console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_LEFT received. UserId: ${data.userId}`);
+                setUsers(prev => {
+                    console.log(`[${new Date().toISOString()}] [STATE] Current users before removal:`, prev.map(u => ({ id: u.id, name: u.fullName })));
+                    const filtered = prev.filter(u => u.id !== data.userId);
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Users after removal:`, filtered.map(u => ({ id: u.id, name: u.fullName })));
+                    return filtered;
+                });
                 break;
             case 'USER_UPDATE': 
-                console.log('User updated:', data.user);
+                console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_UPDATE received:`, data.user);
                 setUsers(prev => {
+                    console.log(`[${new Date().toISOString()}] [STATE] Current users before update:`, prev.map(u => ({ id: u.id, name: u.fullName })));
+                    const userExists = prev.some(u => u.id === data.user.id);
+                    console.log(`[${new Date().toISOString()}] [STATE] User exists: ${userExists}`);
                     const updated = prev.map(u => u.id === data.user.id ? data.user : u);
+                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Users after update:`, updated.map(u => ({ id: u.id, name: u.fullName })));
                     // If user doesn't exist, don't add them via UPDATE
                     return updated;
                 }); 
@@ -77,10 +118,11 @@ const Classroom = () => {
 
         const connect = () => {
             const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080';
+            console.log(`[${new Date().toISOString()}] [WS] 🔌 Connecting to WebSocket: ${wsUrl}`);
             ws.current = new WebSocket(wsUrl);
 
             ws.current.onopen = () => {
-                console.log('Connected to Classroom Server');
+                console.log(`[${new Date().toISOString()}] [WS] ✅ Connected to Classroom Server`);
                 
                 // Get user profile from localStorage
                 const username = localStorage.getItem('username') || 'Anonymous';
@@ -95,19 +137,34 @@ const Classroom = () => {
                     isMicOn: false,
                 };
                 
+                console.log(`[${new Date().toISOString()}] [WS] 📤 Preparing to send JOIN request`);
+                console.log(`[${new Date().toISOString()}] [USER] My user details:`, myUser);
+                
                 // Send JOIN request and wait for server confirmation
                 // Don't add ourselves until we receive JOIN_CONFIRMED
-                ws.current?.send(JSON.stringify({
+                const joinMsg = {
                     type: 'JOIN',
                     user: myUser
-                }));
+                };
+                console.log(`[${new Date().toISOString()}] [WS] 📤 Sending JOIN request:`, joinMsg);
+                ws.current?.send(JSON.stringify(joinMsg));
                 
-                console.log('JOIN request sent, waiting for server confirmation');
+                console.log(`[${new Date().toISOString()}] [WS] ⏳ JOIN request sent, waiting for server confirmation`);
             };
 
             ws.current.onmessage = (event) => {
+                console.log(`[${new Date().toISOString()}] [WS] 📥 Raw message received:`, event.data);
                 const data = JSON.parse(event.data);
+                console.log(`[${new Date().toISOString()}] [WS] 📥 Parsed message:`, data);
                 handleServerMessage(data);
+            };
+            
+            ws.current.onerror = (error) => {
+                console.error(`[${new Date().toISOString()}] [WS] ❌ WebSocket error:`, error);
+            };
+            
+            ws.current.onclose = (event) => {
+                console.log(`[${new Date().toISOString()}] [WS] 🔌 WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
             };
         };
         connect();
@@ -121,17 +178,6 @@ const Classroom = () => {
         localStorage.removeItem('avatar');
         navigate('/');
     };
-
-    // Periodic sync - request current state every 5 seconds
-    useEffect(() => {
-        const syncInterval = setInterval(() => {
-            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-                ws.current.send(JSON.stringify({ type: 'SYNC' }));
-            }
-        }, 5000);
-
-        return () => clearInterval(syncInterval);
-    }, []);
 
     // Ensure we only show max 9 users for the 3x3 grid
     const displayedUsers = users.slice(0, 9); 
