@@ -2,6 +2,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
+const ALLOWED_ORIGINS = new Set([
+    'https://int331.neohbz.com',
+    'https://int331-backend.neohbz.com',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:8080'
+]);
 
 interface User {
     id: string;
@@ -14,6 +21,14 @@ interface User {
 const activeUsers: Map<string, User> = new Map();
 
 const server = http.createServer((req, res) => {
+    setCorsHeaders(req, res);
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
     if (req.url === '/') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Server is running');
@@ -117,4 +132,15 @@ function broadcast(data: any, excludeWs?: WebSocket) {
             client.send(message);
         }
     });
+}
+
+function setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse) {
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.has(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Max-Age', '86400');
 }

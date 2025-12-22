@@ -2,7 +2,12 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AUTOMATION_USER } from '../lib/mockData';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:8080';
+// Prefer explicitly configured backend; fall back to the deployed backend when on the prod host, then localhost for dev.
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL ||
+  (typeof window !== 'undefined' && window.location.hostname === 'int331.neohbz.com'
+    ? 'https://int331-backend.neohbz.com'
+    : 'http://localhost:8080');
 
 const Login = () => {
   const [username, setUsername] = useState('');
