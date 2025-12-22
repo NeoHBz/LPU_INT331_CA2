@@ -4,7 +4,7 @@ userConfig:
   homepageUrl: "https://int331.neohbz.com"
   emailPrefix: "meera"
   targetUrl: "https://int331.neohbz.com/class"
-  logLevel: "info"
+  logLevel: "debug"
   headless: 1
 
 resources:
