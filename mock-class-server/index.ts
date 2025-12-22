@@ -123,6 +123,7 @@ wss.on('connection', (ws) => {
     const connectionTime = new Date().toISOString();
     console.log(`[${connectionTime}] [CONN] New client connected. Total clients: ${wss.clients.size}`);
     let userId: string | null = null;
+    let initialStateSent = false;
 
     // Send initial state (current users in room)
     const initialState = {
@@ -132,6 +133,7 @@ wss.on('connection', (ws) => {
     console.log(`[${new Date().toISOString()}] [SEND] → INITIAL_STATE to new client. Users count: ${initialState.users.length}`, 
         initialState.users.map(u => ({ id: u.id, name: u.fullName })));
     ws.send(JSON.stringify(initialState));
+    initialStateSent = true;
 
     ws.on('message', (message) => {
         try {
@@ -200,12 +202,20 @@ wss.on('connection', (ws) => {
                 case 'SYNC':
                     // Client requests current state
                     console.log(`[${new Date().toISOString()}] [RECV] ← SYNC request from client`);
+                    
+                    // Don't send INITIAL_STATE repeatedly - client already has it
+                    if (initialStateSent) {
+                        console.log(`[${new Date().toISOString()}] [INFO] ⚠️  Ignoring SYNC - client already has INITIAL_STATE`);
+                        break;
+                    }
+                    
                     const syncState = {
                         type: 'INITIAL_STATE',
                         users: Array.from(activeUsers.values())
                     };
                     console.log(`[${new Date().toISOString()}] [SEND] → INITIAL_STATE (sync). Users: ${syncState.users.length}`);
                     ws.send(JSON.stringify(syncState));
+                    initialStateSent = true;
                     break;
             }
         } catch (error) {

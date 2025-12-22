@@ -21,7 +21,6 @@ const Classroom = () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleServerMessage = (data: any) => {
-        console.log('Received message:', data);
         switch (data.type) {
             case 'INITIAL_STATE': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 INITIAL_STATE received. Users count: ${data.users.length}`);
