@@ -1,9 +1,11 @@
 userConfig:
-  username: "alicesmith"
+  username: "vikramsingh"
   password: "password123"
   homepageUrl: "https://int331.neohbz.com"
-  emailPrefix: "alice"
+  emailPrefix: "vikram"
   targetUrl: "https://int331.neohbz.com/class"
+  logLevel: "debug"
+  headless: 1
 
 resources:
   limits:

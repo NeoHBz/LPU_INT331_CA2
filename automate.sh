@@ -3,12 +3,12 @@
 # Main automation script - orchestrates build and deploy scripts
 
 # Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source common functions and scripts
-source "$SCRIPT_DIR/scripts/common.sh"
-source "$SCRIPT_DIR/scripts/build.sh"
-source "$SCRIPT_DIR/scripts/deploy.sh"
+source "$PROJECT_ROOT/scripts/common.sh"
+source "$PROJECT_ROOT/scripts/build.sh"
+source "$PROJECT_ROOT/scripts/deploy.sh"
 
 # Function to show main usage
 show_usage() {

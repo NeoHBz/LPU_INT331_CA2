@@ -1,0 +1,16 @@
+userConfig:
+  username: "kirannair"
+  password: "password123"
+  homepageUrl: "https://int331.neohbz.com"
+  emailPrefix: "kiran"
+  targetUrl: "https://int331.neohbz.com/class"
+  logLevel: "info"
+  headless: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi

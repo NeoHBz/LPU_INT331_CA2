@@ -1,0 +1,16 @@
+userConfig:
+  username: "meeraiyer"
+  password: "password123"
+  homepageUrl: "https://int331.neohbz.com"
+  emailPrefix: "meera"
+  targetUrl: "https://int331.neohbz.com/class"
+  logLevel: "info"
+  headless: 1
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 150m
+    memory: 256Mi

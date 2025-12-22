@@ -151,23 +151,53 @@ list_deployments() {
 
 # Function to get logs for a specific user
 get_logs() {
-    local user_name=$1
-    local release_name="platform-${user_name}"
+    local user_input=$1
+    local pod_name=""
     
-    print_info "Getting logs for user: $user_name"
+    # Check if input looks like a full pod name (contains platform- prefix)
+    if [[ "$user_input" == platform-* ]]; then
+        # Input is likely a pod name, use it directly if it exists
+        if kubectl get pod -n "$NAMESPACE" "$user_input" &> /dev/null; then
+            pod_name="$user_input"
+            print_info "Getting logs for pod: $pod_name"
+        else
+            # Try removing the -0 suffix if present
+            local base_name="${user_input%-*}"
+            if kubectl get pod -n "$NAMESPACE" "${base_name}-0" &> /dev/null; then
+                pod_name="${base_name}-0"
+                print_info "Getting logs for pod: $pod_name"
+            fi
+        fi
+    fi
     
-    # Get pod name for the release
-    local pod_name=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=$release_name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-    
+    # If not found yet, treat as username
     if [ -z "$pod_name" ]; then
-        # Try alternate label selector
-        pod_name=$(kubectl get pods -n "$NAMESPACE" -l "app=$release_name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        local user_name="$user_input"
+        local release_name="platform-${user_name}"
+        
+        print_info "Getting logs for user: $user_name (searching for release: $release_name)"
+        
+        # Get pod name for the release
+        pod_name=$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=$release_name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        
+        if [ -z "$pod_name" ]; then
+            # Try alternate label selector
+            pod_name=$(kubectl get pods -n "$NAMESPACE" -l "app=$release_name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        fi
+        
+        if [ -z "$pod_name" ]; then
+            # Try direct pod name lookup
+            if kubectl get pod -n "$NAMESPACE" "platform-${user_name}-0" &> /dev/null; then
+                pod_name="platform-${user_name}-0"
+            fi
+        fi
     fi
     
     if [ -z "$pod_name" ]; then
-        print_error "No pod found for user: $user_name"
+        print_error "No pod found for: $user_input"
+        print_info "Try using the username without 'platform-' prefix (e.g., 'anjali-mehta' not 'platform-anjali-mehta-0')"
         print_info "Available pods in namespace $NAMESPACE:"
-        kubectl get pods -n "$NAMESPACE"
+        kubectl get pods -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase
         return 1
     fi
     
