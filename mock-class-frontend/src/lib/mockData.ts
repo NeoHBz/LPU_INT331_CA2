@@ -32,9 +32,16 @@ export const generateMockUsers = (): User[] => {
 
 export const MOCK_USERS = generateMockUsers();
 
+// Shared mock password for all users
+export const MOCK_PASSWORD = "password123";
+
 // Credentials to be used for the main automation user (choosing the first one)
 export const AUTOMATION_USER = {
     username: MOCK_USERS[0].username,
-    password: "password123", // Simplified mock password for all
+    password: MOCK_PASSWORD,
     fullName: MOCK_USERS[0].fullName
 };
+
+// Convenience helper to locate a mock user by username (case-insensitive)
+export const findMockUser = (username: string) =>
+  MOCK_USERS.find((user) => user.username.toLowerCase() === username.trim().toLowerCase());

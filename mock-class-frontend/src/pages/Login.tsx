@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AUTOMATION_USER } from '../lib/mockData';
 
 // Prefer explicitly configured backend; fall back to the deployed backend when on the prod host, then localhost for dev.
 const SERVER_URL =
@@ -17,21 +16,6 @@ const Login = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
 
-  const checkServerHealth = async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    try {
-      const response = await fetch(`${SERVER_URL}/health`, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!response.ok) return false;
-      const data = await response.json();
-      return data?.status === 'ok';
-    } catch {
-      clearTimeout(timeout);
-      return false;
-    }
-  };
-
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
@@ -45,31 +29,39 @@ const Login = () => {
       return;
     }
 
-    const isAutomationUser =
-      normalizedUsername === AUTOMATION_USER.username.toLowerCase() &&
-      password === AUTOMATION_USER.password;
-
-    if (!isAutomationUser) {
-      setError(`Invalid credentials. Try ${AUTOMATION_USER.username} / ${AUTOMATION_USER.password}.`);
-      return;
-    }
-
     setIsSubmitting(true);
 
-    const isServerHealthy = await checkServerHealth();
-    if (!isServerHealthy) {
-      setIsSubmitting(false);
-      setError('Backend server is unreachable. Please start it and try again.');
-      return;
-    }
+    try {
+      const response = await fetch(`${SERVER_URL}/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: normalizedUsername, password })
+      });
 
-    // Simulate a short network delay for better UX feedback.
-    setTimeout(() => {
-      const token = `mock-jwt-token-${Date.now()}`;
+      if (!response.ok) {
+        throw new Error('Invalid credentials or server error');
+      }
+
+      const data = await response.json();
+      const token = data.token;
+      const user = data.user;
+
+      if (!token || !user) {
+        throw new Error('Missing token or user profile from backend');
+      }
+
       localStorage.setItem('authToken', token);
-      localStorage.setItem('username', normalizedUsername);
+      localStorage.setItem('username', user.username);
+      localStorage.setItem('fullName', user.fullName);
+      localStorage.setItem('avatar', user.avatar);
+
       navigate('/class');
-    }, 250);
+    } catch (err) {
+      console.error(err);
+      setError('Login failed. Ensure the backend is running and credentials are valid.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -123,7 +115,7 @@ const Login = () => {
           </button>
         </form> 
         <div className="mt-4 text-xs text-gray-500 text-center">
-            Hint: Use {AUTOMATION_USER.username} / {AUTOMATION_USER.password}
+            Uses backend credentials configured for this environment.
         </div>
       </div>
     </div>

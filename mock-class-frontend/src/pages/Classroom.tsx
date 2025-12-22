@@ -15,6 +15,9 @@ const Classroom = () => {
     const ws = useRef<WebSocket | null>(null);
     const myUserId = useRef<string>('');
 
+    const getInitials = (value: string) =>
+        value.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleServerMessage = (data: any) => {
         console.log('Received message:', data);
@@ -56,15 +59,16 @@ const Classroom = () => {
             ws.current.onopen = () => {
                 console.log('Connected to Classroom Server');
                 
-                // Get username from localStorage
+                // Get user profile from localStorage
                 const username = localStorage.getItem('username') || 'Anonymous';
-                const initials = username.split('').slice(0, 2).join('').toUpperCase();
+                const fullName = localStorage.getItem('fullName') || username;
+                const avatar = localStorage.getItem('avatar') || getInitials(fullName);
                 
                 // Announce that we've joined
                 const myUser: User = {
                     id: myUserId.current,
-                    fullName: username,
-                    avatar: initials,
+                    fullName,
+                    avatar,
                     isMicOn: false,
                 };
                 
@@ -89,6 +93,8 @@ const Classroom = () => {
     const leaveClass = () => {
         localStorage.removeItem('authToken');
         localStorage.removeItem('username');
+        localStorage.removeItem('fullName');
+        localStorage.removeItem('avatar');
         navigate('/');
     };
 

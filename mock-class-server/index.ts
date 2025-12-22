@@ -7,8 +7,28 @@ const ALLOWED_ORIGINS = new Set([
     'https://int331-backend.neohbz.com',
     'https://int331.neohbz.com',
     'http://localhost:3000',
-    'http://localhost:8080'
+    'http://localhost:8080',
+    'http://localhost:5173'
 ]);
+
+const MOCK_PASSWORD = 'password123';
+const MOCK_USER_NAMES = [
+    'Amit Sharma', 'Priya Verma', 'Rohit Patel', 'Sneha Gupta',
+    'Vikram Singh', 'Anjali Mehta', 'Arjun Reddy', 'Kiran Nair',
+    'Riya Kapoor', 'Sanjay Chauhan', 'Meera Iyer', 'Aditya Joshi'
+];
+
+interface MockUser {
+    username: string;
+    fullName: string;
+    avatar: string;
+}
+
+const MOCK_USERS: MockUser[] = MOCK_USER_NAMES.map((name) => {
+    const username = name.toLowerCase().replace(' ', '');
+    const avatar = name.split(' ').map((n) => n[0]).join('').toUpperCase();
+    return { username, fullName: name, avatar };
+});
 
 interface User {
     id: string;
@@ -46,6 +66,45 @@ const server = http.createServer((req, res) => {
         };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(stats, null, 2));
+    } else if (req.url === '/login' && req.method === 'POST') {
+        let body = '';
+
+        req.on('data', (chunk) => {
+            body += chunk.toString();
+            if (body.length > 1e6) {
+                req.socket.destroy();
+            }
+        });
+
+        req.on('end', () => {
+            try {
+                const { username, password } = JSON.parse(body || '{}');
+
+                if (!username || !password) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Username and password are required' }));
+                    return;
+                }
+
+                const user = MOCK_USERS.find(
+                    (mockUser) => mockUser.username.toLowerCase() === String(username).toLowerCase()
+                );
+
+                if (!user || password !== MOCK_PASSWORD) {
+                    res.writeHead(401, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Invalid credentials' }));
+                    return;
+                }
+
+                const token = `mock-jwt-token-${Date.now()}`;
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ token, user }));
+            } catch (error) {
+                console.error('Login error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Server error' }));
+            }
+        });
     } else {
         res.writeHead(404);
         res.end();

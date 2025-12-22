@@ -1,8 +1,13 @@
-import express, { Request, Response } from "express";
+import express, { Request, Response, NextFunction, RequestHandler } from "express";
+import cors from "cors";
+import jwt, { JwtPayload } from "jsonwebtoken";
 import Logger from "./utils/logger";
 import * as dotenv from "dotenv";
 import * as path from "path";
+import { createHash, randomUUID } from "crypto";
+import { createServer } from "net";
 import { Mutex } from "async-mutex";
+import puppeteer, { Browser, Page } from "puppeteer";
 
 const envFile = process.env.ENV_FILE || ".env";
 dotenv.config({
@@ -12,24 +17,32 @@ dotenv.config({
 console.log("Loaded ENV file:", envFile);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(cors());
+app.use(express.json());
+
+const DESIRED_PORT = Number(process.env.PORT || 8080);
 const MONITORING_INTERVAL = 30000; // 30 seconds
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const TOKEN_TTL_MS = Number(process.env.JWT_TTL_MS || 1000 * 60 * 60 * 2); // default 2 hours
 
 // Execution stages for workflow tracking
 enum ExecutionStage {
     INITIAL = "initial",
     INITIALIZED = "initialized",
-    WORKFLOW_RUNNING = "workflow_running",
-    WORKFLOW_COMPLETED = "workflow_completed",
+    OPENED_TARGET_URL = "opened_target_url",
+    LOGGED_IN = "logged_in",
+    JOINED_CLASS = "joined_class",
     FAILED = "failed",
 }
 
 type TConfig = {
     username: string;
     password: string;
-    platformHomeUrl: string;
+    homeUrl: string;
     emailPrefix: string;
-    targetPlatformURL: string;
+    targetUrl: string;
+    logLevel?: string;
+    headless?: string;
 };
 
 type RetryConfig = {
@@ -45,22 +58,183 @@ type StageStatus = {
     [key: string]: RetryConfig;
 };
 
+type SessionRecord = {
+    sessionId: string;
+    username: string;
+    clientId: string;
+    issuedAt: string;
+    expiresAt: string;
+    userAgent: string;
+    token: string;
+};
+
+type AuthContext = {
+    username: string;
+    clientId: string;
+    sessionId: string;
+    tokenExpiresAt: string;
+};
+
+type AuthenticatedRequest = Request & { auth?: AuthContext };
+
 const configInit: TConfig = {
     username: process.env.USERNAME as string,
     password: process.env.PASSWORD as string,
-    platformHomeUrl: process.env.HOME_URL as string,
+    homeUrl: process.env.HOME_URL as string,
     emailPrefix: process.env.EMAIL_PREFIX as string,
-    targetPlatformURL: process.env.TARGET_URL as string,
+    targetUrl: process.env.TARGET_URL as string,
+    logLevel: process.env.LOG_LEVEL,
+    headless: process.env.HEADLESS,
 };
 
 Logger.debug("Config loaded:", {
     username: configInit.username,
-    platformHomeUrl: configInit.platformHomeUrl,
+    homeUrl: configInit.homeUrl,
+    targetUrl: configInit.targetUrl,
     password: "***REDACTED***",
 });
 
+// In-memory session store; pod-per-user keeps isolation simple
+const activeSessions: Map<string, SessionRecord> = new Map();
+
+const normalizeUsername = (username: string) => username.trim().toLowerCase();
+
+const buildUserProfile = (username: string) => {
+    const cleaned = normalizeUsername(username);
+    const initials = cleaned
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean)
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase() || "US";
+
+    return {
+        username: cleaned,
+        fullName: cleaned,
+        avatar: initials,
+    };
+};
+
+const resolveClientId = (req: Request, provided?: string) => {
+    if (provided && typeof provided === "string" && provided.trim()) {
+        return provided.trim();
+    }
+    const raw = `${req.ip}-${req.get("user-agent") || "unknown"}`;
+    return createHash("sha256").update(raw).digest("hex").slice(0, 16);
+};
+
+const issueSession = (
+    username: string,
+    clientId: string,
+    userAgent: string,
+): SessionRecord => {
+    const sessionId = randomUUID();
+    const issuedAtMs = Date.now();
+    const expiresAtMs = issuedAtMs + TOKEN_TTL_MS;
+
+    const token = jwt.sign(
+        {
+            sub: normalizeUsername(username),
+            clientId,
+            sessionId,
+        },
+        JWT_SECRET,
+        { expiresIn: Math.floor(TOKEN_TTL_MS / 1000) },
+    );
+
+    return {
+        sessionId,
+        username: normalizeUsername(username),
+        clientId,
+        issuedAt: new Date(issuedAtMs).toISOString(),
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        userAgent,
+        token,
+    };
+};
+
+const authenticate: RequestHandler = (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+) => {
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    if (!token) {
+        res.status(401).json({ message: "Missing token" });
+        return;
+    }
+
+    try {
+        const payload = jwt.verify(token, JWT_SECRET) as JwtPayload & {
+            sessionId?: string;
+            clientId?: string;
+            sub?: string;
+        };
+
+        const username = normalizeUsername(String(payload.sub || ""));
+        const session = activeSessions.get(username);
+        if (!session) {
+            res.status(401).json({ message: "Session expired" });
+            return;
+        }
+
+        const now = Date.now();
+        if (now > new Date(session.expiresAt).getTime()) {
+            activeSessions.delete(username);
+            res.status(401).json({ message: "Session expired" });
+            return;
+        }
+
+        if (
+            session.sessionId !== payload.sessionId ||
+            session.clientId !== payload.clientId
+        ) {
+            res.status(401).json({ message: "Session no longer valid" });
+            return;
+        }
+
+        req.auth = {
+            username,
+            clientId: session.clientId,
+            sessionId: session.sessionId,
+            tokenExpiresAt: session.expiresAt,
+        };
+
+        next();
+    } catch (error: any) {
+        Logger.error(`JWT verification failed: ${error.message || error}`);
+        res.status(401).json({ message: "Invalid token" });
+        return;
+    }
+};
+
+type LoginBody = { username: string; password: string; clientId?: string };
+
+const findAvailablePort = (startPort: number): Promise<number> => {
+    return new Promise((resolve) => {
+        const tester = createServer()
+            .once("error", async (err: any) => {
+                if (err?.code === "EADDRINUSE") {
+                    tester.close();
+                    const nextPort = await findAvailablePort(startPort + 1);
+                    resolve(nextPort);
+                } else {
+                    resolve(startPort);
+                }
+            })
+            .once("listening", () => {
+                tester.close(() => resolve(startPort));
+            })
+            .listen(startPort, "0.0.0.0");
+    });
+};
+
 class Automation {
     config: TConfig;
+    browser: Browser | null;
+    page: Page | null;
     startTime: string;
     systemStatus: "healthy" | "degraded" | "failed";
     currentStage: ExecutionStage;
@@ -74,6 +248,8 @@ class Automation {
         Logger.info("Platform Automation initialized");
         this.config = config;
         this.validateConfig();
+        this.browser = null;
+        this.page = null;
         this.startTime = new Date().toISOString();
         this.systemStatus = "healthy";
         this.currentStage = ExecutionStage.INITIAL;
@@ -92,7 +268,23 @@ class Automation {
                 success: false,
                 lastSuccessTime: null,
             },
-            workflowExecution: {
+            openTarget: {
+                maxRetries: 5,
+                currentRetries: 0,
+                lastAttempt: null,
+                lastError: null,
+                success: false,
+                lastSuccessTime: null,
+            },
+            login: {
+                maxRetries: 5,
+                currentRetries: 0,
+                lastAttempt: null,
+                lastError: null,
+                success: false,
+                lastSuccessTime: null,
+            },
+            joinClass: {
                 maxRetries: 5,
                 currentRetries: 0,
                 lastAttempt: null,
@@ -113,9 +305,15 @@ class Automation {
 
     async validateConfig() {
         Logger.debug("Validating configuration...");
-        const missingVars = Object.entries(this.config)
-            .filter(([_, value]) => !value)
-            .map(([key]) => key);
+        const requiredFields: Array<keyof TConfig> = [
+            "username",
+            "password",
+            "homeUrl",
+            "emailPrefix",
+            "targetUrl",
+        ];
+
+        const missingVars = requiredFields.filter((key) => !this.config[key]);
 
         if (missingVars.length > 0) {
             Logger.error(`Missing environment variables: ${missingVars.join(", ")}`);
@@ -124,6 +322,47 @@ class Automation {
             return;
         }
         Logger.info("Configuration validated successfully");
+    }
+
+    private isHeadlessEnabled() {
+        const flag = String(this.config.headless || "").toLowerCase();
+        return flag === "1" || flag === "true" || flag === "yes";
+    }
+
+    private async ensureBrowser(): Promise<Browser> {
+        if (this.browser && this.browser.connected) {
+            return this.browser;
+        }
+
+        this.browser = await puppeteer.launch({
+            headless: this.isHeadlessEnabled(),
+            defaultViewport: null,
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--ignore-certificate-errors",
+            ],
+        });
+
+        return this.browser;
+    }
+
+    private async getOrCreatePage(): Promise<Page> {
+        const browser = await this.ensureBrowser();
+        const pages = await browser.pages();
+        this.page = pages[0] || (await browser.newPage());
+        this.page.setDefaultNavigationTimeout(60000);
+        return this.page;
+    }
+
+    private async closeBrowser() {
+        if (this.browser) {
+            await this.browser.close().catch(() => undefined);
+        }
+        this.browser = null;
+        this.page = null;
     }
 
     /**
@@ -179,17 +418,20 @@ class Automation {
                     break;
 
                 case ExecutionStage.INITIALIZED:
-                    await this.attemptStage("workflowExecution");
+                    await this.attemptStage("openTarget");
                     break;
 
-                case ExecutionStage.WORKFLOW_RUNNING:
-                    Logger.debug("Workflow currently running...");
+                case ExecutionStage.OPENED_TARGET_URL:
+                    await this.attemptStage("login");
+                    break;
+
+                case ExecutionStage.LOGGED_IN:
+                    await this.attemptStage("joinClass");
+                    break;
+
+                case ExecutionStage.JOINED_CLASS:
+                    Logger.info("Automation joined class; running health checks");
                     await this.attemptStage("healthCheck");
-                    break;
-
-                case ExecutionStage.WORKFLOW_COMPLETED:
-                    Logger.info("Workflow completed successfully");
-                    // Could restart or wait for external trigger
                     break;
 
                 case ExecutionStage.FAILED:
@@ -220,6 +462,13 @@ class Automation {
     }
 
     /**
+     * Expose active session count for status endpoint
+     */
+    getActiveSessionCount() {
+        return activeSessions.size;
+    }
+
+    /**
      * Reset system to stage before failure for retry
      */
     resetStageBeforeFailure(failedStage: string) {
@@ -227,11 +476,17 @@ class Automation {
             case "initialization":
                 this.currentStage = ExecutionStage.INITIAL;
                 break;
-            case "workflowExecution":
+            case "openTarget":
                 this.currentStage = ExecutionStage.INITIALIZED;
                 break;
+            case "login":
+                this.currentStage = ExecutionStage.OPENED_TARGET_URL;
+                break;
+            case "joinClass":
+                this.currentStage = ExecutionStage.LOGGED_IN;
+                break;
             case "healthCheck":
-                this.currentStage = ExecutionStage.WORKFLOW_RUNNING;
+                this.currentStage = ExecutionStage.JOINED_CLASS;
                 break;
             default:
                 this.currentStage = ExecutionStage.INITIAL;
@@ -265,7 +520,7 @@ class Automation {
             } else {
                 this.systemStatus = "failed";
             }
-        } else if (this.currentStage === ExecutionStage.WORKFLOW_COMPLETED) {
+        } else if (this.currentStage === ExecutionStage.JOINED_CLASS) {
             this.systemStatus = "healthy";
         } else {
             const totalStages = Object.keys(this.stageStatus).length;
@@ -307,8 +562,14 @@ class Automation {
                 case "initialization":
                     result = await this.initialize();
                     break;
-                case "workflowExecution":
-                    result = await this.executeWorkflow();
+                case "openTarget":
+                    result = await this.openTarget();
+                    break;
+                case "login":
+                    result = await this.loginToPlatform();
+                    break;
+                case "joinClass":
+                    result = await this.joinClassroom();
                     break;
                 case "healthCheck":
                     result = await this.performHealthCheck();
@@ -364,40 +625,138 @@ class Automation {
     }
 
     /**
-     * Main workflow execution with mutex protection
+     * Navigate to target URL
      */
-    async executeWorkflow(): Promise<boolean> {
-        // Use mutex to prevent concurrent workflow execution
+    async openTarget(): Promise<boolean> {
+        try {
+            const page = await this.getOrCreatePage();
+            Logger.info(`Opening home URL ${this.config.homeUrl}...`);
+
+            await page.goto(this.config.homeUrl, { waitUntil: "networkidle2" });
+            await page.waitForSelector("body", { timeout: 15000 });
+
+            this.currentStage = ExecutionStage.OPENED_TARGET_URL;
+            Logger.info("Home page loaded");
+            return true;
+        } catch (error: any) {
+            Logger.error(`Failed to open target URL: ${error.message || error}`);
+            await this.closeBrowser();
+            return false;
+        }
+    }
+
+    /**
+     * Log into the platform
+     */
+    async loginToPlatform(): Promise<boolean> {
+        try {
+            const page = await this.getOrCreatePage();
+            Logger.info("Logging into platform...");
+
+            const findFirst = async (selectors: string[]) => {
+                for (const selector of selectors) {
+                    const handle = await page.$(selector);
+                    if (handle) return handle;
+                }
+                return null;
+            };
+
+            // Ensure we're on the login page
+            if (!page.url().startsWith(this.config.homeUrl)) {
+                await page.goto(this.config.homeUrl, { waitUntil: "networkidle2" }).catch(() => undefined);
+            }
+
+            const usernameInput = await findFirst([
+                "input[name='username']",
+                "input#username",
+                "input[placeholder='Username']",
+                "input[type='email']",
+                "input[type='text']",
+            ]);
+            const passwordInput = await findFirst([
+                "input[name='password']",
+                "input#password",
+                "input[placeholder='Password']",
+                "input[type='password']",
+            ]);
+
+            if (!usernameInput || !passwordInput) {
+                const pageTitle = await page.title().catch(() => "unknown");
+                const currentUrl = page.url();
+                Logger.error(`Login form inputs not found (url=${currentUrl}, title=${pageTitle})`);
+                return false;
+            }
+
+            await usernameInput.click({ clickCount: 3 });
+            await usernameInput.type(this.config.username);
+            await passwordInput.click({ clickCount: 3 });
+            await passwordInput.type(this.config.password);
+
+            const submitButton = await findFirst([
+                "button[type='submit']",
+                "button#login",
+                "button.loginBtn",
+            ]);
+
+            if (submitButton) {
+                await submitButton.click();
+            } else {
+                await page.keyboard.press("Enter");
+            }
+
+            await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => undefined);
+            this.currentStage = ExecutionStage.LOGGED_IN;
+            Logger.info("Login successful");
+            return true;
+        } catch (error: any) {
+            Logger.error(`Login failed: ${error.message || error}`);
+            return false;
+        }
+    }
+
+    /**
+     * Join the class session
+     */
+    async joinClassroom(): Promise<boolean> {
+        // Use mutex to prevent overlapping joins
         if (this.workflowMutex.isLocked()) {
-            Logger.debug("Workflow already running, skipping execution");
+            Logger.debug("Join already in progress, skipping");
             return true;
         }
 
         const release = await this.workflowMutex.acquire().catch(() => null);
         if (!release) {
-            Logger.error("Failed to acquire workflow mutex");
+            Logger.error("Failed to acquire join mutex");
             return false;
         }
 
         try {
-            this.currentStage = ExecutionStage.WORKFLOW_RUNNING;
             this.executionCount++;
-            
-            Logger.info(`Starting workflow execution #${this.executionCount}...`);
-            
-            // TODO: Implement your automation workflow here
-            // Examples:
-            // - Web scraping tasks
-            // - API integrations
-            // - Data processing pipelines
-            // - Scheduled operations
-            // - Resource monitoring
-            
-            Logger.info("Workflow execution completed successfully");
-            this.currentStage = ExecutionStage.WORKFLOW_COMPLETED;
+            Logger.info(`Joining class (attempt #${this.executionCount})...`);
+            const page = await this.getOrCreatePage();
+
+            await page.goto(this.config.targetUrl, { waitUntil: "networkidle2" });
+
+            // Wait for classroom header as join confirmation
+            const headerFound = await page
+                .waitForSelector("h1", { timeout: 10000 })
+                .then(async (handle) => {
+                    if (!handle) return false;
+                    const text = await handle.evaluate((el) => el.textContent || "");
+                    return /platform automation/i.test(text);
+                })
+                .catch(() => false);
+
+            if (!headerFound) {
+                Logger.error("Classroom view did not load");
+                return false;
+            }
+
+            this.currentStage = ExecutionStage.JOINED_CLASS;
+            Logger.info("Joined class successfully");
             return true;
         } catch (error: any) {
-            Logger.error(`Workflow execution failed: ${error.message || error}`);
+            Logger.error(`Failed to join class: ${error.message || error}`);
             return false;
         } finally {
             release();
@@ -410,14 +769,25 @@ class Automation {
     async performHealthCheck(): Promise<boolean> {
         try {
             Logger.debug("Performing health check...");
-            
-            // TODO: Add your health check logic
-            // Examples:
-            // - Verify external service connections
-            // - Check resource availability
-            // - Validate data integrity
-            // - Monitor performance metrics
-            
+
+            if (!this.browser || !this.browser.connected) {
+                Logger.error("Browser not connected");
+                return false;
+            }
+
+            if (!this.page || this.page.isClosed()) {
+                Logger.error("Page not available for health check");
+                return false;
+            }
+
+            const currentUrl = this.page.url();
+            const looksLikeClass = currentUrl.includes("class") || currentUrl.includes(this.config.targetUrl);
+
+            if (this.currentStage !== ExecutionStage.JOINED_CLASS || !looksLikeClass) {
+                Logger.debug(`Health check: not in class yet (stage=${this.currentStage}, url=${currentUrl})`);
+                return false;
+            }
+
             Logger.debug("Health check passed");
             return true;
         } catch (error: any) {
@@ -443,14 +813,8 @@ class Automation {
     async shutdown() {
         Logger.info("Shutting down automation system...");
         this.stopMonitoring();
-        
-        // TODO: Add cleanup logic
-        // Examples:
-        // - Close database connections
-        // - Release resources
-        // - Save state
-        // - Graceful termination of background tasks
-        
+        await this.closeBrowser();
+
         Logger.info("Shutdown complete");
     }
 
@@ -468,10 +832,100 @@ class Automation {
     }
 }
 
-app.listen(PORT, async () => {
-    Logger.info(`Server running on port ${PORT}`);
+/**
+ * Authentication & session routes (JWT + per-browser uniqueness)
+ */
+const loginHandler: RequestHandler<any, any, LoginBody> = (req, res) => {
+    const { username, password, clientId } = req.body || {};
+
+    if (!username || !password) {
+        res.status(400).json({ message: "username and password are required" });
+        return;
+    }
+
+    const normalizedUsername = normalizeUsername(String(username));
+    const expectedUsername = normalizeUsername(String(configInit.username || ""));
+
+    if (normalizedUsername !== expectedUsername || password !== configInit.password) {
+        Logger.info(`Failed login for ${normalizedUsername}`);
+        res.status(401).json({ message: "Invalid credentials" });
+        return;
+    }
+
+    const resolvedClientId = resolveClientId(req, clientId);
+    const existingSession = activeSessions.get(normalizedUsername);
+
+    // Enforce one active browser session per username
+    if (existingSession && existingSession.clientId !== resolvedClientId) {
+        res.status(409).json({
+            message: "User already active in another browser session. Please logout first.",
+            activeClientId: existingSession.clientId,
+        });
+        return;
+    }
+
+    const session = issueSession(
+        normalizedUsername,
+        resolvedClientId,
+        req.get("user-agent") || "unknown",
+    );
+
+    activeSessions.set(normalizedUsername, session);
+    Logger.info(`Login success for ${normalizedUsername} (client ${session.clientId})`);
+
+    res.json({
+        token: session.token,
+        clientId: session.clientId,
+        user: buildUserProfile(normalizedUsername),
+        expiresAt: session.expiresAt,
+    });
+};
+
+const logoutHandler: RequestHandler = (req: AuthenticatedRequest, res: Response) => {
+    const username = req.auth!.username;
+    activeSessions.delete(username);
+    Logger.info(`User ${username} logged out`);
+    res.json({ message: "Logged out" });
+};
+
+const sessionHandler: RequestHandler = (req: AuthenticatedRequest, res: Response) => {
+    const username = req.auth!.username;
+    const session = activeSessions.get(username);
+    if (!session) {
+        res.status(404).json({ message: "Session not found" });
+        return;
+    }
+    res.json({
+        user: buildUserProfile(username),
+        session: {
+            clientId: session.clientId,
+            issuedAt: session.issuedAt,
+            expiresAt: session.expiresAt,
+        },
+    });
+};
+
+const classroomHandler: RequestHandler = (req: AuthenticatedRequest, res: Response) => {
+    res.json({
+        message: "Classroom access granted",
+        user: buildUserProfile(req.auth!.username),
+        session: {
+            clientId: req.auth!.clientId,
+            expiresAt: req.auth!.tokenExpiresAt,
+        },
+    });
+};
+
+app.post("/login", loginHandler);
+app.post("/logout", authenticate, logoutHandler);
+app.get("/session", authenticate, sessionHandler);
+// Example protected endpoint the frontend can poll to ensure session stays valid
+app.get("/classroom", authenticate, classroomHandler);
+
+const startServer = async () => {
+    const availablePort = await findAvailablePort(DESIRED_PORT);
+
     Logger.debug("Creating automation instance...");
-    
     const automation = new Automation(configInit);
     Logger.debug("Automation instance created!");
 
@@ -487,7 +941,11 @@ app.listen(PORT, async () => {
     app.get("/status", async (_req: Request, res: Response) => {
         Logger.debug("GET /status");
         const status = await automation.apiStatus();
-        res.json(status);
+        res.json({
+            ...status,
+            activeSessions: activeSessions.size,
+            tokenTtlMs: TOKEN_TTL_MS,
+        });
     });
 
     // Health endpoint for Kubernetes
@@ -505,6 +963,7 @@ app.listen(PORT, async () => {
             status: automation.systemStatus,
             currentStage: automation.currentStage,
             timestamp: new Date().toISOString(),
+            activeSessions: activeSessions.size,
         });
     });
 
@@ -519,6 +978,18 @@ app.listen(PORT, async () => {
         await automation.shutdown();
         process.exit(0);
     });
+
+    app.listen(availablePort, () => {
+        Logger.info(`Server running on port ${availablePort}`);
+        if (availablePort !== DESIRED_PORT) {
+            Logger.info(`Desired port ${DESIRED_PORT} was in use; using ${availablePort} instead`);
+        }
+    });
+};
+
+startServer().catch((error: any) => {
+    Logger.error(`Failed to start server: ${error?.message || error}`);
+    process.exit(1);
 });
 
 ["unhandledRejection", "uncaughtException"].forEach((event) => {
