@@ -21,7 +21,7 @@ app.use(cors());
 app.use(express.json());
 
 const DESIRED_PORT = Number(process.env.PORT || 8080);
-const MONITORING_INTERVAL = 30000; // 30 seconds
+const MONITORING_INTERVAL = 5000; // 10 seconds
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 const TOKEN_TTL_MS = Number(process.env.JWT_TTL_MS || 1000 * 60 * 60 * 2); // default 2 hours
 
@@ -353,7 +353,7 @@ class Automation {
         const browser = await this.ensureBrowser();
         const pages = await browser.pages();
         this.page = pages[0] || (await browser.newPage());
-        this.page.setDefaultNavigationTimeout(60000);
+        this.page.setDefaultNavigationTimeout(20000);
         return this.page;
     }
 
@@ -632,8 +632,8 @@ class Automation {
             const page = await this.getOrCreatePage();
             Logger.info(`Opening home URL ${this.config.homeUrl}...`);
 
-            await page.goto(this.config.homeUrl, { waitUntil: "networkidle2" });
-            await page.waitForSelector("body", { timeout: 15000 });
+            await page.goto(this.config.homeUrl, { waitUntil: "domcontentloaded" });
+            await page.waitForSelector("body", { timeout: 5000 });
 
             this.currentStage = ExecutionStage.OPENED_TARGET_URL;
             Logger.info("Home page loaded");
@@ -663,7 +663,7 @@ class Automation {
 
             // Ensure we're on the login page
             if (!page.url().startsWith(this.config.homeUrl)) {
-                await page.goto(this.config.homeUrl, { waitUntil: "networkidle2" }).catch(() => undefined);
+                await page.goto(this.config.homeUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
             }
 
             const usernameInput = await findFirst([
@@ -704,7 +704,7 @@ class Automation {
                 await page.keyboard.press("Enter");
             }
 
-            await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => undefined);
+            await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10000 }).catch(() => undefined);
             this.currentStage = ExecutionStage.LOGGED_IN;
             Logger.info("Login successful");
             return true;
@@ -735,17 +735,28 @@ class Automation {
             Logger.info(`Joining class (attempt #${this.executionCount})...`);
             const page = await this.getOrCreatePage();
 
-            await page.goto(this.config.targetUrl, { waitUntil: "networkidle2" });
+            Logger.debug(`Navigating to targetUrl: ${this.config.targetUrl}`);
+            await page.goto(this.config.targetUrl, { waitUntil: "domcontentloaded" });
+            
+            // Give a small buffer for client-side routing/rendering
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            const currentUrl = page.url();
+            Logger.debug(`Page loaded at: ${currentUrl}`);
 
             // Wait for classroom header as join confirmation
             const headerFound = await page
-                .waitForSelector("h1", { timeout: 10000 })
+                .waitForSelector("h1", { timeout: 5000 })
                 .then(async (handle) => {
                     if (!handle) return false;
                     const text = await handle.evaluate((el) => el.textContent || "");
+                    Logger.debug(`Found h1 with text: "${text}"`);
                     return /platform automation/i.test(text);
                 })
-                .catch(() => false);
+                .catch((error) => {
+                    Logger.error(`Failed to find h1 element: ${error.message || error}`);
+                    return false;
+                });
 
             if (!headerFound) {
                 Logger.error("Classroom view did not load");
@@ -784,7 +795,17 @@ class Automation {
             const looksLikeClass = currentUrl.includes("class") || currentUrl.includes(this.config.targetUrl);
 
             if (this.currentStage !== ExecutionStage.JOINED_CLASS || !looksLikeClass) {
-                Logger.debug(`Health check: not in class yet (stage=${this.currentStage}, url=${currentUrl})`);
+                Logger.error(`Health check failed: not in class (stage=${this.currentStage}, url=${currentUrl})`);
+                
+                // If we thought we were in class but we're not, reset to LOGGED_IN to retry joining
+                if (this.currentStage === ExecutionStage.JOINED_CLASS && !looksLikeClass) {
+                    Logger.info("Resetting to LOGGED_IN stage to rejoin class");
+                    this.currentStage = ExecutionStage.LOGGED_IN;
+                    this.stageStatus["joinClass"].success = false;
+                    this.stageStatus["joinClass"].currentRetries++;
+                    this.stageStatus["joinClass"].lastError = `Not on class page (url=${currentUrl})`;
+                }
+                
                 return false;
             }
 

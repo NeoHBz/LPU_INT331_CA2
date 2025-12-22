@@ -12,8 +12,8 @@ interface User {
 const Classroom = () => {
     const navigate = useNavigate();
     const [users, setUsers] = useState<User[]>([]);
+    const [myUserId] = useState(() => `user-${Date.now()}`);
     const ws = useRef<WebSocket | null>(null);
-    const myUserId = useRef<string>('');
 
     const getInitials = (value: string) =>
         value.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
@@ -28,7 +28,11 @@ const Classroom = () => {
                 break;
             case 'USER_JOINED': 
                 console.log('User joined:', data.user);
-                setUsers(prev => [...prev, data.user]); 
+                // Prevent duplicate entries - check if user already exists
+                setUsers(prev => {
+                    const exists = prev.some(u => u.id === data.user.id || u.fullName === data.user.fullName);
+                    return exists ? prev : [...prev, data.user];
+                });
                 break;
             case 'USER_LEFT': 
                 console.log('User left:', data.userId);
@@ -42,9 +46,6 @@ const Classroom = () => {
     };
 
     useEffect(() => {
-        // Generate a stable user ID once after mount (impure Date.now() used inside effect)
-        myUserId.current = `user-${Date.now()}`;
-
         const token = localStorage.getItem('authToken');
         if (!token) {
             navigate('/');
@@ -52,6 +53,8 @@ const Classroom = () => {
     }, [navigate]);
 
     useEffect(() => {
+        if (!myUserId) return;
+
         const connect = () => {
             const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8080';
             ws.current = new WebSocket(wsUrl);
@@ -64,17 +67,18 @@ const Classroom = () => {
                 const fullName = localStorage.getItem('fullName') || username;
                 const avatar = localStorage.getItem('avatar') || getInitials(fullName);
                 
-                // Announce that we've joined
+                // Announce that we've joined - add immediately for instant feedback
                 const myUser: User = {
-                    id: myUserId.current,
+                    id: myUserId,
                     fullName,
                     avatar,
                     isMicOn: false,
                 };
                 
-                // Add ourselves to the users list immediately
+                // Add ourselves immediately
                 setUsers(prev => [...prev, myUser]);
                 
+                // Then notify server (deduplication logic prevents duplicate on echo)
                 ws.current?.send(JSON.stringify({
                     type: 'JOIN',
                     user: myUser
@@ -88,7 +92,7 @@ const Classroom = () => {
         };
         connect();
         return () => { ws.current?.close(); };
-    }, []);
+    }, [myUserId]);
 
     const leaveClass = () => {
         localStorage.removeItem('authToken');
@@ -129,6 +133,9 @@ const Classroom = () => {
         return gradients[hash % gradients.length];
     };
 
+    const getDisplayName = (user: User) =>
+        user.id === myUserId ? `${user.fullName} (You)` : user.fullName;
+
     return (
         <div className="h-screen w-screen bg-[#202124] text-white flex flex-col">
             {/* Top 10% - Header */}
@@ -155,7 +162,7 @@ const Classroom = () => {
                             >
                                 {user.avatar}
                             </div>
-                            <span className="font-medium text-[1.125rem]" style={{ marginTop: '1rem' }}>{user.fullName}</span>
+                            <span className="font-medium text-[1.125rem]" style={{ marginTop: '1rem' }}>{getDisplayName(user)}</span>
                         </div>
                     ))}
                     {/* Fill empty spots */}

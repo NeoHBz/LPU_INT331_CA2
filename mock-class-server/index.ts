@@ -87,7 +87,7 @@ const server = http.createServer((req, res) => {
                 }
 
                 const user = MOCK_USERS.find(
-                    (mockUser) => mockUser.username.toLowerCase() === String(username).toLowerCase()
+                    (mockUser) => mockUser.username.toLowerCase() === String(username.split(" ").join("").toLowerCase()).toLowerCase()
                 );
 
                 if (!user || password !== MOCK_PASSWORD) {
