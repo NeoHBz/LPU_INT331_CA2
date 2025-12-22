@@ -18,19 +18,12 @@ check_build_prerequisites() {
     
     local missing_tools=()
     
-    # Check if Docker is installed
     if ! command_exists docker; then
         missing_tools+=("docker")
     fi
-    
-    # Check if Node.js is installed
-    if ! command_exists node; then
-        missing_tools+=("node")
-    fi
-    
-    # Check if npm is installed
-    if ! command_exists npm; then
-        missing_tools+=("npm")
+
+    if ! command_exists bun; then
+        missing_tools+=("bun")
     fi
     
     if [ ${#missing_tools[@]} -gt 0 ]; then
@@ -59,8 +52,8 @@ build_local_artifact() {
     
     # Install dependencies if node_modules doesn't exist
     if [ ! -d "node_modules" ]; then
-        print_info "Installing dependencies..."
-        npm install
+        print_info "Installing dependencies with bun..."
+        bun install
     fi
     
     # Clean previous build
@@ -69,7 +62,7 @@ build_local_artifact() {
     
     # Build TypeScript
     print_info "Compiling TypeScript..."
-    if ! npm run build; then
+    if ! bun run build; then
         print_error "TypeScript compilation failed"
         cd - > /dev/null || exit 1
         exit 1
@@ -85,19 +78,21 @@ build_local_artifact() {
     rm -f "$BUILD_ARTIFACT"
     
     # Create zip with dist folder and package files
+    local archive_items=("$SOURCE_DIR/dist" "$SOURCE_DIR/package.json")
+    
+    # Support both legacy binary lock (lockb) and new text lock (lock)
+    for lockfile in "bun.lockb" "bun.lock"; do
+        if [ -f "$SOURCE_DIR/$lockfile" ]; then
+            archive_items+=("$SOURCE_DIR/$lockfile")
+        fi
+    done
+
     if command_exists zip; then
-        zip -r "$BUILD_ARTIFACT" \
-            "$SOURCE_DIR/dist" \
-            "$SOURCE_DIR/package.json" \
-            "$SOURCE_DIR/package-lock.json" \
-            -q
+        zip -r "$BUILD_ARTIFACT" "${archive_items[@]}" -q
     else
         # Fallback to tar if zip is not available
         BUILD_ARTIFACT="./build-artifact.tar.gz"
-        tar -czf "$BUILD_ARTIFACT" \
-            "$SOURCE_DIR/dist" \
-            "$SOURCE_DIR/package.json" \
-            "$SOURCE_DIR/package-lock.json"
+        tar -czf "$BUILD_ARTIFACT" "${archive_items[@]}"
     fi
     
     print_success "Build artifact created: $BUILD_ARTIFACT"
