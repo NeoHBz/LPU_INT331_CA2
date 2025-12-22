@@ -8,9 +8,9 @@ export interface User {
 }
 
 const names = [
-  "Alice Smith", "Bob Johnson", "Charlie Brown", "David Wilson", 
-  "Eva Miller", "Frank Davis", "Grace Taylor", "Henry Anderson", 
-  "Ivy Thomas", "Jack White", "Kelly Martin", "Liam Harris"
+  "Amit Sharma", "Priya Verma", "Rohit Patel", "Sneha Gupta",
+  "Vikram Singh", "Anjali Mehta", "Arjun Reddy", "Kiran Nair",
+  "Riya Kapoor", "Sanjay Chauhan", "Meera Iyer", "Aditya Joshi"
 ];
 
 function getInitials(name: string) {

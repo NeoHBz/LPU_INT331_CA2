@@ -1,9 +1,9 @@
 userConfig:
   username: "alicesmith"
   password: "password123"
-  homepageUrl: "http://localhost:5173"
+  homepageUrl: "https://int331.neohbz.com"
   emailPrefix: "alice"
-  targetUrl: "http://localhost:5173/class"
+  targetUrl: "https://int331.neohbz.com/class"
 
 resources:
   limits:

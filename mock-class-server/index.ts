@@ -5,7 +5,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
 const ALLOWED_ORIGINS = new Set([
     'https://int331.neohbz.com',
     'https://int331-backend.neohbz.com',
-    'http://localhost:5173',
+    'https://int331.neohbz.com',
     'http://localhost:3000',
     'http://localhost:8080'
 ]);
