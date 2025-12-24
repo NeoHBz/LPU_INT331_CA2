@@ -110,16 +110,9 @@ const Classroom = () => {
                 console.log(`[${new Date().toISOString()}] [STATE] Setting hasJoined.current = true`);
                 hasJoined.current = true;
                 
-                // Check if we already exist before adding
-                setUsers(prev => {
-                    const exists = prev.some(u => u.id === data.user.id);
-                    if (exists) {
-                        console.log(`[${new Date().toISOString()}] [STATE] ⚠️  Already in list, skipping`);
-                        return prev;
-                    }
-                    console.log(`[${new Date().toISOString()}] [STATE] ✅ Adding self immediately`);
-                    return [...prev, data.user];
-                });
+                // Queue the add operation to maintain order with INITIAL_STATE
+                console.log(`[${new Date().toISOString()}] [BATCH] 📥 Queueing ADD for self: ${data.user.fullName}`);
+                queueUpdate('ADD', data.user);
                 break;
             case 'USER_JOINED': 
                 console.log(`[${new Date().toISOString()}] [MSG] 📨 USER_JOINED received:`, data.user);
